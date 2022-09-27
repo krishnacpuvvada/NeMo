@@ -28,6 +28,8 @@ import torch
 from nemo.collections.asr.data import audio_to_text_dataset, feature
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
+from nemo.collections.asr.losses.ss_losses.si_snr import SiSNR
+from nemo.collections.asr.modules.conv_asr import Conv2dASRDecoderReconstruction
 from nemo.collections.asr.metrics.wer_bpe import WERBPE
 from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
 from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel
@@ -72,6 +74,14 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
         if hasattr(self._cfg, 'freeze_asr_decoder') and self._cfg.freeze_asr_decoder:
             self.decoder.freeze()
 
+        # spectrogram loss
+        self.recon_decoder=Conv2dASRDecoderReconstruction(
+            feat_in=self._cfg.d_model,
+            feat_out=self._cfg.preprocessor.features,
+            channels_hidden=self._cfg.d_model,
+        )
+        self.recon_loss = SiSNR(return_error=True)
+
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """
@@ -88,6 +98,15 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
         d["speaker_embedding"] = NeuralType(('B', 'T'), AudioSignal())
         d['embedding_lengths'] = NeuralType(tuple('B'), LengthsType())
         d["sample_id"] = d.pop("sample_id")
+        d["target"] = NeuralType(('B', 'T'), AudioSignal())
+        return d
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        d = super().output_types
+        d["target"] = NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation())
+        d["target_estimate"] = NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation())
+        d["target_length"] = NeuralType(tuple('B'), LengthsType())
         return d
 
     @typecheck()
@@ -99,6 +118,7 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
         processed_signal_length=None,
         speaker_embedding=None,
         embedding_lengths=None,
+        target=None,
     ):
         """
         Forward pass of the model.
@@ -133,6 +153,12 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
                 input_signal=input_signal, length=input_signal_length,
             )
 
+            # process the target
+            target, target_length = self.preprocessor(
+                input_signal=target, length=input_signal_length,
+            )
+
+
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
@@ -145,32 +171,58 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
         # emb_proj = self.fuse(speaker_embedding).unsqueeze(-1)
         # processed_signal = processed_signal + emb_proj
         mask, mask_len, pre_encoded_audio, pre_encoded_audio_lengths = self.speaker_beam(audio_signal=processed_signal, length=processed_signal_length, emb=speaker_embedding)
-        processed_signal = mask * pre_encoded_audio.permute(0, 2, 1)
+        processed_signal = mask * pre_encoded_audio.permute(0, 2, 1)    # [B, d_model, T]
+        
+        # recon head
+        target_estimate = self.recon_decoder(encoder_output=processed_signal)
+
         encoded, encoded_len, _, _ = self.encoder(audio_signal=processed_signal, length=pre_encoded_audio_lengths)
         log_probs = self.decoder(encoder_output=encoded)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
-        return log_probs, encoded_len, greedy_predictions
+        return log_probs, encoded_len, greedy_predictions, target, target_estimate, target_length
 
     def training_step(self, batch, batch_nb):
-        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths = batch
+        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths, target = batch
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len, speaker_embedding=speaker_embedding
             )
         else:
-            log_probs, encoded_len, predictions = self.forward(
+            log_probs, encoded_len, predictions, target, target_estimate, target_length = self.forward(
                 input_signal=signal,
                 input_signal_length=signal_len,
                 speaker_embedding=speaker_embedding,
                 embedding_lengths=embedding_lengths,
+                target=target,
             )
 
-        loss_value = self.loss(
+        asr_loss = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
         )
 
-        tensorboard_logs = {'train_loss': loss_value, 'learning_rate': self._optimizer.param_groups[0]['lr']}
+        # recon loss
+        #############
+        # adjust estimated length due to down/up sampling
+        _, _, T = target.shape
+        target_estimate = target_estimate[:, :, :T]
+
+        _, D, T = target_estimate.shape
+        target_length = target_length.unsqueeze(-1).expand(-1,D).reshape(-1)
+        recon_loss = self.recon_loss(
+            target=target.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+            estimate=target_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+            target_lengths=target_length,
+        )
+        recon_loss = recon_loss.mean().clamp(-30.0, 999999.0)
+
+        loss_value = asr_loss + self._cfg.loss.alpha * recon_loss
+        tensorboard_logs = {
+            'train_loss': loss_value, 
+            'asr_loss': asr_loss,
+            'spectrogram_reconstruction_loss': recon_loss,
+            'learning_rate': self._optimizer.param_groups[0]['lr']
+            }
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -191,22 +243,40 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths = batch
+        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths, target = batch
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len
             )
         else:
-            log_probs, encoded_len, predictions = self.forward(
+            log_probs, encoded_len, predictions, target, target_estimate, target_length = self.forward(
                 input_signal=signal,
                 input_signal_length=signal_len,
                 speaker_embedding=speaker_embedding,
                 embedding_lengths=embedding_lengths,
+                target=target,
             )
 
-        loss_value = self.loss(
+        asr_loss = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
         )
+
+        # recon loss
+        # adjust estimated length due to down/up sampling
+        _, _, T = target.shape
+        target_estimate = target_estimate[:, :, :T]
+        
+        _, D, T = target_estimate.shape
+        target_length = target_length.unsqueeze(-1).expand(-1,D).reshape(-1)
+        recon_loss = self.recon_loss(
+            target=target.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+            estimate=target_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+            target_lengths=target_length,
+        )
+        recon_loss = recon_loss.mean().clamp(-30.0, 999999.0)
+
+        loss_value = asr_loss + self._cfg.loss.alpha * recon_loss
+
         self._wer.update(
             predictions=predictions, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len
         )
@@ -214,6 +284,8 @@ class TSEncDecCTCModelBPE(EncDecCTCModelBPE):
         self._wer.reset()
         return {
             'val_loss': loss_value,
+            'val_asr_loss': asr_loss,
+            'val_spectrogram_reconstruction_loss': recon_loss,
             'val_wer_num': wer_num,
             'val_wer_denom': wer_denom,
             'val_wer': wer,

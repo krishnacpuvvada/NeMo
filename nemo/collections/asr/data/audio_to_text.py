@@ -15,6 +15,7 @@ import io
 import json
 import math
 import os
+import copy
 from typing import Callable, Dict, Iterable, List, Optional, Union
 import random
 import braceexpand
@@ -104,11 +105,11 @@ def _speech_embedding_collate_fn(batch, pad_id):
                assumes the signals are 1d torch tensors (i.e. mono audio).
     """
     packed_batch = list(zip(*batch))
-    if len(packed_batch) == 7:
-        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths, sample_ids = packed_batch
-    elif len(packed_batch) == 6:
+    if len(packed_batch) == 8:
+        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths, _, sample_ids = packed_batch
+    elif len(packed_batch) == 7:
         sample_ids = None
-        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths = packed_batch
+        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths, _ = packed_batch
     else:
         raise ValueError("Expects 4 or 5 tensors in the batch!")
     max_audio_len = 0
@@ -119,23 +120,25 @@ def _speech_embedding_collate_fn(batch, pad_id):
         max_embedding_len = max(embedding_lengths).item()
     max_tokens_len = max(tokens_lengths).item()
 
-    audio_signal, tokens, all_embeddings = [], [], []
+    audio_signal, tokens, all_embeddings, all_targets = [], [], [], []
     for b in batch:
-        if len(b) == 7:
-            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len, _ = b
+        if len(b) == 8:
+            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len, target, _ = b
         else:
-            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len = b
+            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len, target = b
         if has_audio:
             sig_len = sig_len.item()
             if sig_len < max_audio_len:
                 pad = (0, max_audio_len - sig_len)
                 sig = torch.nn.functional.pad(sig, pad)
+                target = torch.nn.functional.pad(target, pad)
             embed_len = embedding_len.item()
             if embed_len < max_embedding_len:
                 pad = (0, max_embedding_len - embed_len)
                 embedding = torch.nn.functional.pad(embedding, pad)
             audio_signal.append(sig)
             all_embeddings.append(embedding)
+            all_targets.append(target)
         tokens_i_len = tokens_i_len.item()
         if tokens_i_len < max_tokens_len:
             pad = (0, max_tokens_len - tokens_i_len)
@@ -147,15 +150,16 @@ def _speech_embedding_collate_fn(batch, pad_id):
         audio_lengths = torch.stack(audio_lengths)
         all_embeddings = torch.stack(all_embeddings)
         embedding_lengths = torch.stack(embedding_lengths)
+        all_targets = torch.stack(all_targets)
     else:
-        audio_signal, audio_lengths, all_embeddings = None, None
+        audio_signal, audio_lengths, all_embeddings, all_targets = None, None, None, None
     tokens = torch.stack(tokens)
     tokens_lengths = torch.stack(tokens_lengths)
     if sample_ids is None:
-        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths
+        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths, all_targets
     else:
         sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
-        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths, sample_ids
+        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths, all_targets, sample_ids
 
 
 class ASRManifestProcessor:
@@ -589,6 +593,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         sample_id = output.pop('sample_id')
         output['speaker_features'] = NeuralType(('B', 'T'), AudioSignal())
         output['features_lengths'] = NeuralType(tuple('B'), LengthsType())
+        output['target_pt'] = NeuralType(('B', 'T'), AudioSignal())
         output['sample_id'] = sample_id
         return output
 
@@ -667,9 +672,9 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
             if self.return_sample_id:
-                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len, index
+                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len, target_pt, index
             else:
-                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len
+                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len, target_pt
             return output
 
 
@@ -706,6 +711,10 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         rand_idx = random.randint(0, ll - features_list[0].shape[0])
         mix[rand_idx: rand_idx + features_list[0].shape[0]] = features_list[0]
 
+        # to return a copy of target
+        # so far, only target_pt is copied into mix
+        target_pt = copy.deepcopy(mix)
+
         for x in features_list[1:]:
             rand_idx = random.randint(0, ll - x.shape[0])
             mix[rand_idx: rand_idx + x.shape[0]] += x
@@ -715,7 +724,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         mix_scaling = 1 / max_amp * 0.9
         mix = mix_scaling * mix
 
-
+        target_pt = target_pt * mix_scaling
 
         # f = f"{self.eval_dir}/{index}.wav"
         # sf.write(f, mix, 16000)
@@ -726,9 +735,9 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
         if self.return_sample_id:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, index
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target_pt, index
         else:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target_pt
 
         return output
 
@@ -757,6 +766,7 @@ class StaticTargetAudioToBPEDataset(AudioToBPEDataset):
         sample_id = output.pop('sample_id')
         output['speaker_features'] = NeuralType(('B', 'T'), AudioSignal())
         output['features_lengths'] = NeuralType(tuple('B'), LengthsType())
+        output['target_pt'] = NeuralType(('B', 'T'), AudioSignal())
         output['sample_id'] = sample_id
         return output
 
@@ -863,6 +873,9 @@ class StaticTargetAudioToBPEDataset(AudioToBPEDataset):
         rand_idx = random.randint(0, ll - features_list[0].shape[0])
         mix[rand_idx: rand_idx + features_list[0].shape[0]] = features_list[0]
 
+        # so far only target is mixed 
+        target_pt = copy.deepcopy(mix)
+
         for x in features_list[1:]:
             rand_idx = random.randint(0, ll - x.shape[0])
             mix[rand_idx: rand_idx + x.shape[0]] += x
@@ -872,10 +885,12 @@ class StaticTargetAudioToBPEDataset(AudioToBPEDataset):
         mix_scaling = 1 / max_amp * 0.9
         mix = mix_scaling * mix
 
+        target_pt = target_pt * mix_scaling
+
         if self.return_sample_id:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, index
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target_pt, index
         else:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len 
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target_pt 
 
         return output
 

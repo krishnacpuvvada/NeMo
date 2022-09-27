@@ -195,6 +195,9 @@ model:
     num_classes: -1
     vocabulary: []
 
+  loss:
+    alpha: 1.
+
   optim:
     name: adamw
     lr: 2.0
