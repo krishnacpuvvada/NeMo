@@ -608,6 +608,8 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         mixing_portion=1.0,
         use_start_end_token: bool = True,
         return_sample_id: bool = False,
+        dynamic_scaling=True,
+        volume_perturb=False,
     ):
 
         super().__init__(
@@ -636,6 +638,11 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         self.manifest_filepath = manifest_filepath
         self.num_sources = num_sources
         self.mixing_portion = mixing_portion
+        self.dynamic_scaling = dynamic_scaling
+        self.volume_perturb = volume_perturb
+
+        if self.dynamic_scaling:
+            self.dynamic_scaling_params=np.power(10, np.array([-2.5, 2.5])/20.)
 
     def __getitem__(self, index):
 
@@ -644,7 +651,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
         target_speaker = sample.speaker
         if len(self.manifest_processor.collection.speaker_mapping[target_speaker]) == 1:
-            raise ValueError(f"target speaker {target_speaker} only has one utterance")
+            raise ValueError("target speaker only has one utterance")
 
         enrollment_index = np.random.choice(
             self.manifest_processor.collection.speaker_mapping[target_speaker]
@@ -660,7 +667,9 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         enroll_pt, enroll_pt_len = super().__getitem__(enrollment_index)[:2]
 
 
-        target_pt *= np.random.uniform(0.125, 2.0) # volumne scaling
+        if self.dynamic_scaling:
+            target_pt *= np.random.uniform(*self.dynamic_scaling_params) # volumne scaling
+        
         if np.random.rand() < (1/self.num_sources): # no mixing, just clean data
             
             # max_amp = torch.abs(target_pt).max().item()
@@ -671,9 +680,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
                 output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len
             return output
 
-
         i = 0
-
 
         num_overlapping_sources = np.random.randint(1,self.num_sources ) # if overlap then at least one at most num_sources - 1 other sources
         overlapping_speakers = np.random.choice(
@@ -694,9 +701,10 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
 
-        for i in range(len(overlapping_pts)):
-            scale = np.random.uniform(0.125, 2.0) # volume scaling 
-            overlapping_pts[i] *=scale
+        if self.dynamic_scaling:
+            for i in range(len(overlapping_pts)):
+                scale = np.random.uniform(*self.dynamic_scaling_params) # volume scaling 
+                overlapping_pts[i] *=scale
         
 
 
@@ -733,6 +741,8 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
         # mix = pad_audio_to_length(mix, 46 * 16000)
+        if self.volume_perturb:
+            mix *=  np.random.uniform(0.125, 2.0) # volumne scaling
         
         mix = torch.tensor(mix, dtype=torch.float)
         mix_len = torch.tensor(len(mix)).long()
