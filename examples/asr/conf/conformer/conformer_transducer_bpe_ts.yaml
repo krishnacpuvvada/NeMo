@@ -56,6 +56,7 @@ model:
         max_speed_rate: 1.05
         prob: 0.0    
     num_sources: ${model.num_sources}
+    mixing_portion: 0.7
     manifest_filepath: ???
     synthetic_generation: true
     sample_rate: ${model.sample_rate}
@@ -158,9 +159,9 @@ model:
 
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 0 # set to zero to disable it
-    time_masks: 0 # set to zero to disable it
-    freq_width: 27
+    freq_masks: 2 # set to zero to disable it  
+    time_masks: 5 # set to zero to disable it
+    freq_width: 5
     time_width: 0.05
 
   encoder:
@@ -247,6 +248,10 @@ model:
   loss:
     loss_name: "default"
 
+  loss_list:
+    reconstruction:
+      alpha: 1.0
+
     warprnnt_numba_kwargs:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
       # You may enable FastEmit to reduce the latency of the model for streaming
@@ -283,7 +288,7 @@ trainer:
   accelerator: auto
   strategy: ddp
   accumulate_grad_batches: 1
-  gradient_clip_val: 0.0
+  gradient_clip_val: 1.0
   precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True

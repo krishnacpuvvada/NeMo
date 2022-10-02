@@ -24,10 +24,13 @@ import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from tqdm.auto import tqdm
 import torch
+import torch.nn as nn
 
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.rnnt import RNNTLoss
+from nemo.collections.asr.losses.ss_losses.si_snr import SiSNR
+from nemo.collections.asr.modules.conv_asr import Conv2dASRDecoderReconstruction
 from nemo.collections.asr.metrics.rnnt_wer_bpe import RNNTBPEWER, RNNTBPEDecoding, RNNTBPEDecodingConfig
 from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel
@@ -71,6 +74,28 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
         if hasattr(self._cfg, 'freeze_asr_decoder') and self._cfg.freeze_asr_decoder:
             self.decoder.freeze()
 
+        
+        self.decoder_losses = None
+        if "loss_list" in self._cfg:
+            self.decoder_losses = {}
+            self.loss_alphas = {}
+
+            for decoder_loss_name, decoder_loss_cfg in self._cfg.loss_list.items():
+                decoder_loss = {
+                    'decoder': Conv2dASRDecoderReconstruction(
+                        feat_in=self._cfg.d_model,
+                        feat_out=self._cfg.preprocessor.features,
+                        channels_hidden=self._cfg.d_model,
+                    ),
+                    'loss' : SiSNR(return_error=False),
+                }
+                decoder_loss = nn.ModuleDict(decoder_loss)
+                self.decoder_losses[decoder_loss_name] = decoder_loss
+                self.loss_alphas[decoder_loss_name] = decoder_loss_cfg.get("alpha", 1.0)
+            
+            self.decoder_losses = nn.ModuleDict(self.decoder_losses)
+
+
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """
@@ -87,6 +112,15 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
         d["speaker_embedding"] = NeuralType(('B', 'T'), AudioSignal())
         d['embedding_lengths'] = NeuralType(tuple('B'), LengthsType())
         d["sample_id"] = NeuralType(tuple('B'), LengthsType(), optional=True)
+        d["target_signal"] = NeuralType(('B', 'T'), AudioSignal(), optional=True) 
+        return d
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        d = super().output_types
+        d["target_signal"] = NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation(), optional=True)
+        d["target_signal_estimate"] = NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation(), optional=True)
+        d["target_signal_length"] = NeuralType(tuple('B'), LengthsType(), optional=True)
         return d
 
     @typecheck()
@@ -98,6 +132,7 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
         processed_signal_length=None,
         speaker_embedding=None,
         embedding_lengths=None,
+        target_signal=None,
     ):
         """
         Forward pass of the model. Note that for RNNT Models, the forward pass of the model is a 3 step process,
@@ -136,6 +171,12 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
                 input_signal=input_signal, length=input_signal_length,
             )
 
+        # process target if present
+        if target_signal is not None:
+            target_signal, target_signal_length = self.preprocessor(
+                input_signal=target_signal, length=input_signal_length,
+            )
+
         # Spec augment is not applied during evaluation/testing
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
@@ -150,24 +191,34 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             length=processed_signal_length,
             emb=speaker_embedding,
         )
-        processed_signal = mask * pre_encoded_audio.permute(0, 2, 1)
+        processed_signal = mask * pre_encoded_audio.permute(0, 2, 1)    # [B, D, T]
+
+        # target estimate
+        if 'reconstruction' in self.decoder_losses:
+            target_signal_estimate = self.decoder_losses['reconstruction']['decoder'](encoder_output=processed_signal)
+
         encoded, encoded_len, _, _ = self.encoder(audio_signal=processed_signal, length=pre_encoded_audio_lengths)
-        return encoded, encoded_len
+        
+        if target_signal is not None:
+            return encoded, encoded_len, target_signal, target_signal_estimate, target_signal_length
+        else:
+            return encoded, encoded_len, None, None, None
 
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
 
-        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths = batch
+        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths, target_signal = batch
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(
+            encoded, encoded_len, target_signal, target_signal_estimate, target_signal_length = self.forward(
                 input_signal=signal,
                 input_signal_length=signal_len,
                 speaker_embedding=speaker_embedding,
                 embedding_lengths=embedding_lengths,
+                target_signal=target_signal if 'reconstruction' in self.decoder_losses else None,
             )
         del signal
 
@@ -190,7 +241,7 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             )
 
             tensorboard_logs = {
-                'train_loss': loss_value,
+                'rnnt_loss': loss_value,
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
@@ -219,7 +270,7 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             )
 
             tensorboard_logs = {
-                'train_loss': loss_value,
+                'rnnt_loss': loss_value,
                 'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
@@ -227,6 +278,28 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             if compute_wer:
                 tensorboard_logs.update({'training_batch_wer': wer})
 
+        ## other  losses
+        #################
+        if 'reconstruction' in self.decoder_losses:
+            _, _, T = target_signal.shape
+            target_signal_estimate = target_signal_estimate[:, :, :T]
+
+            _, D, T = target_signal_estimate.shape
+            target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
+            recon_loss = self.decoder_losses['reconstruction']['loss'](
+                target=target_signal.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+                estimate=target_signal_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+                target_lengths=target_signal_length,
+            )
+            recon_loss = recon_loss.mean().clamp(-30.0, 999999.0)
+
+            # add to tensorboard
+            tensorboard_logs.update({'spectrogram_reconstruction_loss': recon_loss})
+            loss_value  = loss_value + self.loss_alphas['reconstruction'] * recon_loss
+        
+        # add total loss
+        tensorboard_logs.update({'train_loss': loss_value})
+            
         # Log items
         self.log_dict(tensorboard_logs)
 
@@ -237,17 +310,18 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
         return {'loss': loss_value}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths = batch
+        signal, signal_len, transcript, transcript_len, speaker_embedding, embedding_lengths, target_signal = batch
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(
+            encoded, encoded_len, target_signal, target_signal_estimate, target_signal_length = self.forward(
                 input_signal=signal,
                 input_signal_length=signal_len,
                 speaker_embedding=speaker_embedding,
                 embedding_lengths=embedding_lengths,
+                target_signal=target_signal if 'reconstruction' in self.decoder_losses else None,
             )
         del signal
 
@@ -263,7 +337,7 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
                     log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
                 )
 
-                tensorboard_logs['val_loss'] = loss_value
+                tensorboard_logs['val_rnnt_loss'] = loss_value
 
             self.wer.update(encoded, encoded_len, transcript, transcript_len)
             wer, wer_num, wer_denom = self.wer.compute()
@@ -294,13 +368,40 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             )
 
             if loss_value is not None:
-                tensorboard_logs['val_loss'] = loss_value
+                tensorboard_logs['val_rnnt_loss'] = loss_value
 
             tensorboard_logs['val_wer_num'] = wer_num
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
 
         self.log_dict({'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32)})
+
+        ## other  losses
+        #################
+        if 'reconstruction' in self.decoder_losses:
+            _, _, T = target_signal.shape
+            target_signal_estimate = target_signal_estimate[:, :, :T]
+
+            _, D, T = target_signal_estimate.shape
+            target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
+            recon_loss = self.decoder_losses['reconstruction']['loss'](
+                target=target_signal.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+                estimate=target_signal_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
+                target_lengths=target_signal_length,
+            )
+            recon_loss = recon_loss.mean().clamp(-30.0, 999999.0)
+
+            if loss_value is not None:
+                loss_value = loss_value + self.loss_alphas['reconstruction'] * recon_loss
+            else:
+                loss_value = self.loss_alphas['reconstruction'] * recon_loss
+            
+            tensorboard_logs.update(
+                {
+                    'val_loss' : loss_value,
+                    'val_spectrogram_reconstruction_loss': recon_loss,
+                }
+            )
 
         return tensorboard_logs
 

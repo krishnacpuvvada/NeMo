@@ -16,6 +16,7 @@ import json
 import librosa
 import math
 import os
+import copy
 from typing import Callable, Dict, Iterable, List, Optional, Union
 import random
 import braceexpand
@@ -105,13 +106,13 @@ def _speech_embedding_collate_fn(batch, pad_id):
                assumes the signals are 1d torch tensors (i.e. mono audio).
     """
     packed_batch = list(zip(*batch))
-    if len(packed_batch) == 7:
-        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths, sample_ids = packed_batch
-    elif len(packed_batch) == 6:
+    if len(packed_batch) == 8:
+        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths, _, sample_ids = packed_batch
+    elif len(packed_batch) == 7:
         sample_ids = None
-        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths = packed_batch
+        _, audio_lengths, _, tokens_lengths, embeddings, embedding_lengths, _ = packed_batch
     else:
-        raise ValueError("Expects 4 or 5 tensors in the batch!")
+        raise ValueError("Expects 7 or 8 tensors in the batch!")
     max_audio_len = 0
     max_embedding_len = 0
     has_audio = audio_lengths[0] is not None
@@ -120,23 +121,25 @@ def _speech_embedding_collate_fn(batch, pad_id):
         max_embedding_len = max(embedding_lengths).item()
     max_tokens_len = max(tokens_lengths).item()
 
-    audio_signal, tokens, all_embeddings = [], [], []
+    audio_signal, tokens, all_embeddings, all_targets = [], [], [], []
     for b in batch:
-        if len(b) == 7:
-            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len, _ = b
+        if len(b) == 8:
+            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len, target, _ = b
         else:
-            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len = b
+            sig, sig_len, tokens_i, tokens_i_len, embedding, embedding_len, target = b
         if has_audio:
             sig_len = sig_len.item()
             if sig_len < max_audio_len:
                 pad = (0, max_audio_len - sig_len)
                 sig = torch.nn.functional.pad(sig, pad)
+                target = torch.nn.functional.pad(target, pad)
             embed_len = embedding_len.item()
             if embed_len < max_embedding_len:
                 pad = (0, max_embedding_len - embed_len)
                 embedding = torch.nn.functional.pad(embedding, pad)
             audio_signal.append(sig)
             all_embeddings.append(embedding)
+            all_targets.append(target)
         tokens_i_len = tokens_i_len.item()
         if tokens_i_len < max_tokens_len:
             pad = (0, max_tokens_len - tokens_i_len)
@@ -148,16 +151,16 @@ def _speech_embedding_collate_fn(batch, pad_id):
         audio_lengths = torch.stack(audio_lengths)
         all_embeddings = torch.stack(all_embeddings)
         embedding_lengths = torch.stack(embedding_lengths)
+        all_targets = torch.stack(all_targets)
     else:
-        audio_signal, audio_lengths, all_embeddings = None, None
+        audio_signal, audio_lengths, all_embeddings, all_targets = None, None, None, None
     tokens = torch.stack(tokens)
     tokens_lengths = torch.stack(tokens_lengths)
     if sample_ids is None:
-        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths
+        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths, all_targets
     else:
         sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
-        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths, sample_ids
-
+        return audio_signal, audio_lengths, tokens, tokens_lengths, all_embeddings, embedding_lengths, all_targets, sample_ids
 
 class ASRManifestProcessor:
     """
@@ -590,6 +593,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         sample_id = output.pop('sample_id')
         output['speaker_features'] = NeuralType(('B', 'T'), AudioSignal())
         output['features_lengths'] = NeuralType(tuple('B'), LengthsType())
+        output['target_pt'] = NeuralType(('B', 'T'), AudioSignal())
         output['sample_id'] = sample_id
         return output
 
@@ -608,8 +612,8 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         mixing_portion=1.0,
         use_start_end_token: bool = True,
         return_sample_id: bool = False,
-        dynamic_scaling=True,
-        volume_perturb=False,
+        dynamic_scaling: bool = True,
+        volume_perturb: bool= False,
     ):
 
         super().__init__(
@@ -668,21 +672,21 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
         if self.dynamic_scaling:
-            target_pt *= np.random.uniform(*self.dynamic_scaling_params) # volumne scaling
+            target_pt *= np.random.uniform(*self.dynamic_scaling_params) 
         
-        if np.random.rand() < (1/self.num_sources): # no mixing, just clean data
-            
+        #if np.random.rand() < (1/self.num_sources): # no mixing, just clean data
+        if np.random.rand() > self.mixing_portion: # no mixing, just clean data
             # max_amp = torch.abs(target_pt).max().item()
             # target_pt *= (1 / max_amp * 0.9)
             if self.return_sample_id:
-                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len, index
+                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len, target_pt, index
             else:
-                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len
+                output = target_pt, target_pt_len, text, text_len, enroll_pt, enroll_pt_len, target_pt
             return output
 
         i = 0
 
-        num_overlapping_sources = np.random.randint(1,self.num_sources ) # if overlap then at least one at most num_sources - 1 other sources
+        num_overlapping_sources = np.random.randint(1, self.num_sources) # if overlap then at least one at most num_sources - 1 other sources
         overlapping_speakers = np.random.choice(
             list(self.manifest_processor.collection.speaker_mapping.keys()), num_overlapping_sources, replace=False
         )
@@ -699,14 +703,11 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
             overlapping_pt = super().__getitem__(overlapping_speaker_index)[0]
             overlapping_pts.append(overlapping_pt)
 
-
-
         if self.dynamic_scaling:
             for i in range(len(overlapping_pts)):
                 scale = np.random.uniform(*self.dynamic_scaling_params) # volume scaling 
                 overlapping_pts[i] *=scale
         
-
 
         features_list = [target_pt] + overlapping_pts
 
@@ -723,12 +724,17 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
         # shuffle so target speaker appears at random position in mixed speech
-        random.shuffle(features_list)
+        shuffle_order = list(range(len(features_list)))
+        random.shuffle(shuffle_order)
 
-        mix = features_list[0].numpy()
+        # random.shuffle(features_list)
+
+        mix = features_list[shuffle_order[0]].numpy()
         last_start = 0
-        for i, x in enumerate(features_list[1:]):
-            
+        if shuffle_order[0] == 0:
+            target = copy.deepcopy(mix)
+        for order in shuffle_order[1:]:
+            x = features_list[order]
             delay = int(np.random.uniform(0.5*16000 + last_start, len(mix)))
             last_start = delay
             next_audio = x.numpy()
@@ -738,12 +744,19 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
             next_audio = pad_audio_to_length(next_audio, target_length)
             mix = mix + next_audio
 
+            if order == 0:      # save the target audio
+                target = copy.deepcopy(next_audio)
 
+        # adjust target length
+        target = pad_audio_to_length(target, len(mix))
 
         # mix = pad_audio_to_length(mix, 46 * 16000)
         if self.volume_perturb:
-            mix *=  np.random.uniform(0.125, 2.0) # volumne scaling
+            scale_factor = np.random.uniform(0.125, 2.0) # volume scaling
+            mix *=  scale_factor
+            target *= scale_factor
         
+        target = torch.tensor(target, dtype=torch.float)
         mix = torch.tensor(mix, dtype=torch.float)
         mix_len = torch.tensor(len(mix)).long()
 
@@ -763,9 +776,9 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
 
         if self.return_sample_id:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, index
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target, index
         else:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target
 
         return output
 
@@ -794,6 +807,7 @@ class StaticTargetAudioToBPEDataset(AudioToBPEDataset):
         sample_id = output.pop('sample_id')
         output['speaker_features'] = NeuralType(('B', 'T'), AudioSignal())
         output['features_lengths'] = NeuralType(tuple('B'), LengthsType())
+        output['target_pt'] = NeuralType(('B', 'T'), AudioSignal())
         output['sample_id'] = sample_id
         return output
 
@@ -889,6 +903,9 @@ class StaticTargetAudioToBPEDataset(AudioToBPEDataset):
         rand_idx = random.randint(0, ll - features_list[0].shape[0])
         mix[rand_idx: rand_idx + features_list[0].shape[0]] = features_list[0]
 
+        # so far only target is mixed
+        target_pt = copy.deepcopy(mix)
+
         for x in features_list[1:]:
             rand_idx = random.randint(0, ll - x.shape[0])
             mix[rand_idx: rand_idx + x.shape[0]] += x
@@ -919,9 +936,9 @@ class StaticTargetAudioToBPEDataset(AudioToBPEDataset):
         #     fp.write(json.dumps(tmp) + "\n")
 
         if self.return_sample_id:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, index
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target_pt, index
         else:
-            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len 
+            output = mix, mix_len, text, text_len, enroll_pt, enroll_pt_len, target_pt 
 
         return output
 
