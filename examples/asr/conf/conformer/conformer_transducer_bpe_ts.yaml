@@ -56,7 +56,6 @@ model:
         max_speed_rate: 1.05
         prob: 0.0    
     num_sources: ${model.num_sources}
-    mixing_portion: 0.7
     manifest_filepath: ???
     synthetic_generation: true
     sample_rate: ${model.sample_rate}
@@ -251,6 +250,8 @@ model:
   loss_list:
     reconstruction:
       alpha: 1.0
+      start_step: 0
+      stop_step: -1
 
     warprnnt_numba_kwargs:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148

@@ -161,7 +161,7 @@ def get_dynamic_target_audio_bpe_dataset(
         use_start_end_token=config.get('use_start_end_token', True),
         return_sample_id=config.get('return_sample_id', False),
         num_sources=config.get('num_sources', 2),
-        mixing_portion=config.get('mixing_portion', 1.0),
+        mixing_portion=config.get('mixing_portion', None),
         dynamic_scaling=config.get('dynamic_scaling', False),
         volume_perturb=config.get('volume_perturb', False),
     )

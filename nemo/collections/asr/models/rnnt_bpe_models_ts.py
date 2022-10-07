@@ -79,6 +79,8 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
         if "loss_list" in self._cfg:
             self.decoder_losses = {}
             self.loss_alphas = {}
+            self.start_step = {}
+            self.stop_step = {}
 
             for decoder_loss_name, decoder_loss_cfg in self._cfg.loss_list.items():
                 decoder_loss = {
@@ -92,6 +94,8 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
                 decoder_loss = nn.ModuleDict(decoder_loss)
                 self.decoder_losses[decoder_loss_name] = decoder_loss
                 self.loss_alphas[decoder_loss_name] = decoder_loss_cfg.get("alpha", 1.0)
+                self.start_step[decoder_loss_name] = decoder_loss_cfg.get("start_step", 0)
+                self.stop_step[decoder_loss_name] = decoder_loss_cfg.get("stop_step", -1)
             
             self.decoder_losses = nn.ModuleDict(self.decoder_losses)
 
@@ -280,22 +284,32 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
 
         ## other  losses
         #################
-        if 'reconstruction' in self.decoder_losses:
+        # if 'reconstruction' in self.decoder_losses:
+        for dec_loss_name, dec_loss in self.decoder_losses.items():
+            # loop through decoders and losses
+            if (
+                hasattr(self, "trainer")
+                and self.trainer is not None
+                and (self.trainer.global_step < self.start_step[dec_loss_name] or self.trainer.global_step >= self.stop_step[dec_loss_name])
+            ):
+                continue
+
             _, _, T = target_signal.shape
             target_signal_estimate = target_signal_estimate[:, :, :T]
 
             _, D, T = target_signal_estimate.shape
             target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
-            recon_loss = self.decoder_losses['reconstruction']['loss'](
+            current_loss_value = dec_loss['loss'](
                 target=target_signal.reshape(-1, T).transpose(0,1).unsqueeze(-1),
                 estimate=target_signal_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
                 target_lengths=target_signal_length,
             )
-            recon_loss = recon_loss.mean().clamp(-30.0, 999999.0)
+            if dec_loss_name == 'reconstruction':
+                current_loss_value = current_loss_value.mean().clamp(-30.0, 999999.0)
 
             # add to tensorboard
-            tensorboard_logs.update({'spectrogram_reconstruction_loss': recon_loss})
-            loss_value  = loss_value + self.loss_alphas['reconstruction'] * recon_loss
+            tensorboard_logs.update({f'{dec_loss_name}_loss': current_loss_value})
+            loss_value  = loss_value + self.loss_alphas[dec_loss_name] * current_loss_value
         
         # add total loss
         tensorboard_logs.update({'train_loss': loss_value})
@@ -378,28 +392,38 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
 
         ## other  losses
         #################
-        if 'reconstruction' in self.decoder_losses:
+        for dec_loss_name, dec_loss in self.decoder_losses.items():
+            # loop through decoders and losses
+            if (
+                hasattr(self, "trainer")
+                and self.trainer is not None
+                and (self.trainer.global_step < self.start_step[dec_loss_name] or self.trainer.global_step >= self.stop_step[dec_loss_name])
+            ):
+                continue
+
             _, _, T = target_signal.shape
             target_signal_estimate = target_signal_estimate[:, :, :T]
 
             _, D, T = target_signal_estimate.shape
             target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
-            recon_loss = self.decoder_losses['reconstruction']['loss'](
+            current_loss_value = dec_loss['loss'](
                 target=target_signal.reshape(-1, T).transpose(0,1).unsqueeze(-1),
                 estimate=target_signal_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
                 target_lengths=target_signal_length,
             )
-            recon_loss = recon_loss.mean().clamp(-30.0, 999999.0)
+
+            if dec_loss_name == 'reconstruction':
+                current_loss_value = current_loss_value.mean().clamp(-30.0, 999999.0)
 
             if loss_value is not None:
-                loss_value = loss_value + self.loss_alphas['reconstruction'] * recon_loss
+                loss_value = loss_value + self.loss_alphas[dec_loss_name] * current_loss_value
             else:
-                loss_value = self.loss_alphas['reconstruction'] * recon_loss
+                loss_value = self.loss_alphas[dec_loss_name] * current_loss_value
             
             tensorboard_logs.update(
                 {
                     'val_loss' : loss_value,
-                    'val_spectrogram_reconstruction_loss': recon_loss,
+                    f'val_spectrogram_{dec_loss_name}_loss': current_loss_value,
                 }
             )
 

@@ -17,6 +17,7 @@ import librosa
 import math
 import os
 import copy
+import itertools
 from typing import Callable, Dict, Iterable, List, Optional, Union
 import random
 import braceexpand
@@ -609,7 +610,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         max_utts: int = 0,
         trim: bool = False,
         num_sources=2, 
-        mixing_portion=1.0,
+        mixing_portion=None,
         use_start_end_token: bool = True,
         return_sample_id: bool = False,
         dynamic_scaling: bool = True,
@@ -648,6 +649,15 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         if self.dynamic_scaling:
             self.dynamic_scaling_params=np.power(10, np.array([-2.5, 2.5])/20.)
 
+        if self.mixing_portion is None:
+            self.mixing_portion = [1.] * self.num_sources
+            self.mixing_portion = self.mixing_portion / self.num_sources
+
+        assert len(self.mixing_portion) == self.num_sources, "mixing portion doesn't have same number of elements as num_sources"
+        assert sum(self.mixing_portion) ==1.0 , "sum of elements in mixing portion is not one"
+
+        self.mixing_portion = list(itertools.accumulate(self.mixing_portion))
+
     def __getitem__(self, index):
 
         target_pt, target_pt_len, text, text_len = super().__getitem__(index)[:4]
@@ -674,8 +684,9 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         if self.dynamic_scaling:
             target_pt *= np.random.uniform(*self.dynamic_scaling_params) 
         
+        coin_toss = np.random.rand()
         #if np.random.rand() < (1/self.num_sources): # no mixing, just clean data
-        if np.random.rand() > self.mixing_portion: # no mixing, just clean data
+        if coin_toss <= self.mixing_portion[0]:
             # max_amp = torch.abs(target_pt).max().item()
             # target_pt *= (1 / max_amp * 0.9)
             if self.return_sample_id:
@@ -686,7 +697,8 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
         i = 0
 
-        num_overlapping_sources = np.random.randint(1, self.num_sources) # if overlap then at least one at most num_sources - 1 other sources
+        # num_overlapping_sources = np.random.randint(1, self.num_sources) # if overlap then at least one at most num_sources - 1 other sources
+        num_overlapping_sources = self.num_sources - 1
         overlapping_speakers = np.random.choice(
             list(self.manifest_processor.collection.speaker_mapping.keys()), num_overlapping_sources, replace=False
         )
@@ -698,10 +710,12 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
         overlapping_speakers = overlapping_speakers.tolist()
 
         overlapping_pts = []
-        for overlapping_speaker in overlapping_speakers:
+        for i, overlapping_speaker in enumerate(overlapping_speakers):
             overlapping_speaker_index = np.random.choice(self.manifest_processor.collection.speaker_mapping[overlapping_speaker])
             overlapping_pt = super().__getitem__(overlapping_speaker_index)[0]
             overlapping_pts.append(overlapping_pt)
+            if coin_toss <= self.mixing_portion[i+1]:
+                break
 
         if self.dynamic_scaling:
             for i in range(len(overlapping_pts)):
