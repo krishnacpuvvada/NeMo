@@ -290,7 +290,10 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             if (
                 hasattr(self, "trainer")
                 and self.trainer is not None
-                and (self.trainer.global_step < self.start_step[dec_loss_name] or self.trainer.global_step >= self.stop_step[dec_loss_name])
+                and (
+                    self.trainer.global_step < self.start_step[dec_loss_name] or 
+                    (self.trainer.global_step >= self.stop_step[dec_loss_name] and self.stop_step[dec_loss_name] >= 0)
+                )
             ):
                 continue
 
@@ -397,7 +400,10 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             if (
                 hasattr(self, "trainer")
                 and self.trainer is not None
-                and (self.trainer.global_step < self.start_step[dec_loss_name] or self.trainer.global_step >= self.stop_step[dec_loss_name])
+                and (
+                    self.trainer.global_step < self.start_step[dec_loss_name] or 
+                    (self.trainer.global_step >= self.stop_step[dec_loss_name] and self.stop_step[dec_loss_name] >= 0)
+                )
             ):
                 continue
 
@@ -478,18 +484,31 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
                 return None
 
             if config['synthetic_generation'] == True:
-                dataset = audio_to_text_dataset.get_dynamic_target_audio_bpe_dataset(
-                    config=config,
-                    tokenizer=self.tokenizer,
-                    augmentor=augmentor,
-                )
+                if config['dataset'] == 'wsj0':
+                    dataset = audio_to_text_dataset.get_dynamic_target_audio_bpe_dataset_wsj(
+                        config=config,
+                        tokenizer=self.tokenizer,
+                        augmentor=augmentor,
+                    )
+                else:
+                    dataset = audio_to_text_dataset.get_dynamic_target_audio_bpe_dataset(
+                        config=config,
+                        tokenizer=self.tokenizer,
+                        augmentor=augmentor,
+                    )
             else:
-                
-                dataset = audio_to_text_dataset.get_static_target_audio_bpe_dataset(
-                    config=config,
-                    tokenizer=self.tokenizer,
-                    augmentor=augmentor,
-                )
+                if config['dataset'] == 'wsj0':
+                    dataset = audio_to_text_dataset.get_static_target_audio_bpe_dataset_wsj(
+                        config=config,
+                        tokenizer=self.tokenizer,
+                        augmentor=augmentor,
+                    )
+                else:
+                    dataset = audio_to_text_dataset.get_static_target_audio_bpe_dataset(
+                        config=config,
+                        tokenizer=self.tokenizer,
+                        augmentor=augmentor,
+                    )
 
 
         loader = torch.utils.data.DataLoader(
