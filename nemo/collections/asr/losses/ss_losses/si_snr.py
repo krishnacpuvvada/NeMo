@@ -33,7 +33,7 @@ class SiSNR(Loss):
         super().__init__()
         self.return_error=return_error
 
-    def forward(self, target, estimate, target_lengths=None):
+    def forward(self, target, estimate, target_lengths=None, mask=None):
         """
         Args:
             target: 
@@ -50,10 +50,12 @@ class SiSNR(Loss):
         device = estimate.device
 
         # look for a replacement of torch.tensor
-        if target_lengths is None:
+        if target_lengths is None and mask is None:
             target_lengths = torch.tensor([estimate.shape[0]] * estimate.shape[1], device=device)
 
-        mask = get_mask(target, target_lengths)
+        if mask is None:
+            mask = get_mask(target, target_lengths)
+        
         estimate *= mask
 
         num_samples = target_lengths.contiguous().reshape(1, -1, 1).float()

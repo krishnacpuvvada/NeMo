@@ -90,7 +90,7 @@ def main(cfg):
             d = checkpoint.state_dict()
             d_new = {}
             for k, v in d.items():
-                if not (k.startswith("decoder") or k.startswith("joint")):
+                if not (k.startswith("none") or k.startswith("none")):
                     d_new[k] = v
             asr_model.load_state_dict(d_new, strict=False)
             del checkpoint

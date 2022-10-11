@@ -246,9 +246,12 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
 
             tensorboard_logs = {
                 'rnnt_loss': loss_value,
-                'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
+
+            tensorboard_logs.update(
+                dict([(f"learning_rate_group{i}" , param_group['lr']) for i, param_group in enumerate(self._optimizer.param_groups)])
+            )
 
             if (sample_id + 1) % log_every_n_steps == 0:
                 self.wer.update(encoded, encoded_len, transcript, transcript_len)
@@ -275,9 +278,12 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
 
             tensorboard_logs = {
                 'rnnt_loss': loss_value,
-                'learning_rate': self._optimizer.param_groups[0]['lr'],
                 'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
             }
+
+            tensorboard_logs.update(
+                dict([(f"learning_rate_group{i}" , param_group['lr']) for i, param_group in enumerate(self._optimizer.param_groups)])
+            )
 
             if compute_wer:
                 tensorboard_logs.update({'training_batch_wer': wer})
@@ -300,12 +306,13 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             _, _, T = target_signal.shape
             target_signal_estimate = target_signal_estimate[:, :, :T]
 
-            _, D, T = target_signal_estimate.shape
-            target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
+            B, D, T = target_signal_estimate.shape
+            mask = self.get_mask(target_signal, target_signal_length)
+            # target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
             current_loss_value = dec_loss['loss'](
-                target=target_signal.reshape(-1, T).transpose(0,1).unsqueeze(-1),
-                estimate=target_signal_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
-                target_lengths=target_signal_length,
+                target=target_signal.reshape(B, -1).transpose(0, 1).unsqueeze(-1),
+                estimate=target_signal_estimate.reshape(B, -1).transpose(0, 1).unsqueeze(-1),
+                mask=mask.reshape(B, -1).transpose(0, 1).unsqueeze(-1),
             )
             if dec_loss_name == 'reconstruction':
                 current_loss_value = current_loss_value.mean().clamp(-30.0, 999999.0)
@@ -410,12 +417,13 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             _, _, T = target_signal.shape
             target_signal_estimate = target_signal_estimate[:, :, :T]
 
-            _, D, T = target_signal_estimate.shape
-            target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
+            B, D, T = target_signal_estimate.shape
+            mask = self.get_mask(target_signal, target_signal_length)
+            # target_signal_length = target_signal_length.unsqueeze(-1).expand(-1,D).reshape(-1)
             current_loss_value = dec_loss['loss'](
-                target=target_signal.reshape(-1, T).transpose(0,1).unsqueeze(-1),
-                estimate=target_signal_estimate.reshape(-1, T).transpose(0,1).unsqueeze(-1),
-                target_lengths=target_signal_length,
+                target=target_signal.reshape(B, -1).transpose(0, 1).unsqueeze(-1),
+                estimate=target_signal_estimate.reshape(B, -1).transpose(0, 1).unsqueeze(-1),
+                mask=mask.reshape(B, -1).transpose(0, 1).unsqueeze(-1),
             )
 
             if dec_loss_name == 'reconstruction':
@@ -671,3 +679,84 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
                 self.speaker_model.unfreeze()
             logging.set_verbosity(logging_level)
         return hypotheses
+
+    
+    
+    def get_mask(self, target, target_lengths):
+        """
+        args:
+            target: [B, D, T]
+            target_lengths: [B]
+
+        return:
+            mask: [B, D, T]
+        """
+        B, D, T = target.shape
+        mask = target.new_ones((B, T))
+        for i in range(B):
+            mask[i, target_lengths[i]:] = 0
+
+        mask = mask.unsqueeze(1).mask.expand(-1, D, -1)
+        return mask
+
+    
+    def setup_optimizer_param_groups(self):
+        """
+            Used to create param groups for the optimizer.
+            As an example, this can be used to specify per-layer learning rates:
+            optim.SGD([
+                        {'params': model.base.parameters()},
+                        {'params': model.classifier.parameters(), 'lr': 1e-3}
+                        ], lr=1e-2, momentum=0.9)
+            See https://pytorch.org/docs/stable/optim.html for more information.
+            By default, ModelPT will use self.parameters().
+            Override this method to add custom param groups.
+            In the config file, add 'optim_param_groups' to support different LRs 
+            for different components (unspecified params will use the default LR):
+            model:
+                optim_param_groups:
+                    encoder: 
+                        lr: 1e-4
+                        momentum: 0.8
+                    decoder: 
+                        lr: 1e-3
+                optim:
+                    lr: 3e-3
+                    momentum: 0.9   
+        """
+        if not hasattr(self, "parameters"):
+            self._optimizer_param_groups = None
+            return
+
+        known_groups = []
+        param_groups = []
+        if "optim_param_groups" in self.cfg:
+            param_groups_cfg = self.cfg.optim_param_groups
+            for group, group_cfg in param_groups_cfg.items():
+                module = getattr(self, group, None)
+                if module is None:
+                    raise ValueError(f"{group} not found in model.")
+                elif hasattr(module, "parameters"):
+                    known_groups.append(group)
+                    new_group = {"params": module.parameters()}
+                    for k, v in group_cfg.items():
+                        new_group[k] = v
+                    param_groups.append(new_group)
+                else:
+                    raise ValueError(f"{group} does not have parameters.")
+
+            other_params = []
+            for n, p in self.named_parameters():
+                is_unknown = True
+                for group in known_groups:
+                    if n.startswith(group):
+                        is_unknown = False
+                if is_unknown:
+                    other_params.append(p)
+
+            if len(other_params):
+                param_groups = [{"params": other_params}] + param_groups
+        else:
+            param_groups = [{"params": self.parameters()}]
+
+        self._optimizer_param_groups = param_groups
