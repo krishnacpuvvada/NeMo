@@ -164,7 +164,7 @@ model:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it  
     time_masks: 5 # set to zero to disable it
-    freq_width: 16
+    freq_width: 27
     time_width: 0.05
 
   encoder:

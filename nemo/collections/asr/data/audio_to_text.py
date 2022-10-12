@@ -658,6 +658,7 @@ class DynamicTargetAudioToBPEDataset(AudioToBPEDataset):
 
         self.mixing_portion = list(itertools.accumulate(self.mixing_portion))
 
+
     def __getitem__(self, index):
 
         target_pt, target_pt_len, text, text_len = super().__getitem__(index)[:4]
@@ -989,7 +990,7 @@ class DynamicTargetAudioToBPEDataset_wsj(AudioToBPEDataset):
         max_utts: int = 0,
         trim: bool = False,
         num_sources=2, 
-        mixing_portion=1.0,
+        mixing_portion=None,
         use_start_end_token: bool = True,
         return_sample_id: bool = False,
     ):
@@ -1021,6 +1022,18 @@ class DynamicTargetAudioToBPEDataset_wsj(AudioToBPEDataset):
         self.num_sources = num_sources
         self.mixing_portion = mixing_portion
 
+        if self.mixing_portion is None:
+            self.mixing_portion = [1.] * self.num_sources
+            self.mixing_portion = self.mixing_portion / self.num_sources
+
+        assert len(self.mixing_portion) == self.num_sources, "mixing portion doesn't have same number of elements as num_sources"
+        assert sum(self.mixing_portion) ==1.0 , "sum of elements in mixing portion is not one"
+
+        self.mixing_portion = list(itertools.accumulate(self.mixing_portion))
+
+
+
+
     def __getitem__(self, index):
 
         target_pt, target_pt_len, text, text_len = super().__getitem__(index)[:4]
@@ -1046,7 +1059,9 @@ class DynamicTargetAudioToBPEDataset_wsj(AudioToBPEDataset):
         t1_gain = np.clip(random.normalvariate(-27.43, 2.57), -45, 0)
         target_pt = _rescale(target_pt, t1_gain)
 
-        if np.random.rand() > self.mixing_portion: # no mixing, just clean data
+        coin_toss = np.random.rand()
+        # if np.random.rand() > self.mixing_portion: # no mixing, just clean data
+        if coin_toss <= self.mixing_portion[0]:
             max_amp = torch.abs(target_pt).max().item()
             target_pt *= (1 / max_amp * 0.9)
 
@@ -1070,11 +1085,12 @@ class DynamicTargetAudioToBPEDataset_wsj(AudioToBPEDataset):
         overlapping_speakers = overlapping_speakers.tolist()
 
         overlapping_pts = []
-        for overlapping_speaker in overlapping_speakers:
+        for i, overlapping_speaker in enumerate(overlapping_speakers):
             overlapping_speaker_index = np.random.choice(self.manifest_processor.collection.speaker_mapping[overlapping_speaker])
             overlapping_pt = super().__getitem__(overlapping_speaker_index)[0]
             overlapping_pts.append(overlapping_pt)
-
+            if coin_toss <= self.mixing_portion[i+1]:
+                break
 
 
         for i in range(len(overlapping_pts)):

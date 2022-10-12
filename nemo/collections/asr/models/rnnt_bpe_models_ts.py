@@ -680,8 +680,7 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
             logging.set_verbosity(logging_level)
         return hypotheses
 
-    
-    
+
     def get_mask(self, target, target_lengths):
         """
         args:
@@ -696,7 +695,7 @@ class TSEncDecRNNTBPEModel(EncDecRNNTBPEModel):
         for i in range(B):
             mask[i, target_lengths[i]:] = 0
 
-        mask = mask.unsqueeze(1).mask.expand(-1, D, -1)
+        mask = mask.unsqueeze(1).expand(-1, D, -1)
         return mask
 
     

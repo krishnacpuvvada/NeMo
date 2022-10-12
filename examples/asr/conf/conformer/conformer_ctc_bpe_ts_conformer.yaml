@@ -26,9 +26,10 @@
 
 name: "Conformer-CTC-BPE"
 do_training: True
-num_sources: 2
+dataset: "wsj0"
 model:
   d_model: 256
+  num_sources: 2
   freeze_asr_encoder: false
   freeze_asr_decoder: false 
   speaker_embeddings:
@@ -46,14 +47,15 @@ model:
   ctc_reduction: 'mean_batch'
   skip_nan_grad: false
   train_ds:
+    dataset: ${dataset}
     augmentor:
       speed:
         sr: ${model.sample_rate}
         resample_type: 'kaiser_fast'
-        min_speed_rate: 0.9
-        max_speed_rate: 1.1
-        prob: 0.9
-    num_sources: ${num_sources}
+        min_speed_rate: 0.95
+        max_speed_rate: 1.05
+        prob: 0.0
+    num_sources: ${model.num_sources}
     mixing_portion: 0.7
     manifest_filepath: ???
     synthetic_generation: true
@@ -75,7 +77,8 @@ model:
     bucketing_batch_size: null
 
   validation_ds:
-    num_sources: ${num_sources}
+    dataset: ${dataset}
+    num_sources: ${model.num_sources}
     synthetic_generation: false
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
@@ -86,7 +89,8 @@ model:
     use_start_end_token: false
 
   test_ds:
-    num_sources: ${num_sources}
+    dataset: ${dataset}
+    num_sources: ${model.num_sources}
     synthetic_generation: false
     manifest_filepath: null
     sample_rate: ${model.sample_rate}
@@ -121,8 +125,8 @@ model:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it
     # you may use lower time_masks for smaller models to have a faster convergence
-    time_masks: 10 # set to zero to disable it
-    freq_width: 27
+    time_masks: 5 # set to zero to disable it
+    freq_width: 16
     time_width: 0.05
 
   speaker_beam:
@@ -220,6 +224,12 @@ model:
       warmup_steps: 10000
       warmup_ratio: null
       min_lr: 1e-6
+
+  loss_list:
+    reconstruction:
+      alpha: 1.0
+      start_step: 0
+      stop_step: -1 
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs

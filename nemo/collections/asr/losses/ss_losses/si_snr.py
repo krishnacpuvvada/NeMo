@@ -49,17 +49,24 @@ class SiSNR(Loss):
         assert target.size() == estimate.size(), f"target size {target.shape}, estimate  {estimate.shape}"
         device = estimate.device
 
+        if target_lengths is not None and mask is not None:
+            raise ValueError(f"Both mask and target_lengths cannot be specified")
+
         # look for a replacement of torch.tensor
         if target_lengths is None and mask is None:
             target_lengths = torch.tensor([estimate.shape[0]] * estimate.shape[1], device=device)
 
-        if mask is None:
+        if target_lengths is not None and mask is None:
             mask = get_mask(target, target_lengths)
+            num_samples = target_lengths.contiguous().reshape(1, -1, 1).float()
+            # [1, B, 1]
+
+        if target_lengths is None and mask is not None:
+            num_samples = torch.sum(mask, dim=0, keepdim=True).float()
         
         estimate *= mask
 
-        num_samples = target_lengths.contiguous().reshape(1, -1, 1).float()
-        # [1, B, 1]
+        
 
         mean_target = torch.sum(target, dim=0, keepdim=True) / num_samples
         mean_estimate = torch.sum(estimate, dim=0, keepdim=True) / num_samples
