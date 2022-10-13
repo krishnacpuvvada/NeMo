@@ -88,10 +88,15 @@ def main(cfg):
             
             # remove conv subsampling parameters
             d = checkpoint.state_dict()
+            
             d_new = {}
             for k, v in d.items():
-                if not (k.startswith("none") or k.startswith("none")):
-                    d_new[k] = v
+                if k.startswith("encoder.pre_encode"):
+                    d_new[k.replace("encoder", "speaker_beam")] = v
+                # elif k.startswith("encoder"):
+                #     d_new[k.replace("encoder", "speaker_beam")] = v
+            d.update(d_new)
+
             asr_model.load_state_dict(d_new, strict=False)
             del checkpoint
 
