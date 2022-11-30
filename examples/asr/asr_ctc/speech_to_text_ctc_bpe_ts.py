@@ -103,6 +103,12 @@ def main(cfg):
             asr_model.load_state_dict(d, strict=False)
             del checkpoint
 
+        if cfg.get('init_from_ptl_ckpt', None) is not None:
+            ckpt_path = cfg.get('init_from_ptl_ckpt')
+            ckpt = torch.load(ckpt_path, map_location=torch.device('cpu'))
+            asr_model.load_state_dict(ckpt['state_dict'], strict=False)
+            del ckpt
+
         trainer.fit(asr_model)
     else:
         asr_model = TSEncDecCTCModelBPE.restore_from(
