@@ -29,7 +29,7 @@ model:
   sample_rate: 16000
   compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
   log_prediction: true # enables logging sample predictions in the output during training
-  rnnt_reduction: 'mean_volume'
+  rnnt_reduction: 'mean_batch'
   skip_nan_grad: false
 
   model_defaults:
@@ -91,21 +91,23 @@ model:
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioCodeToEmbeddingPreprocessor
-    codec_vocab_size: ${model.model_defaults.codebook_size}   # should be multiplied with n_codebooks_to_use
+    codebook_size: ${model.model_defaults.codebook_size}
+    n_codebooks_to_use: ${model.model_defaults.n_codebooks_to_use}
     embedding_dim: 512
     embedding_out_dim: 512
-    padding_idx: ${model.preprocessor.codec_vocab_size}
+    codebook_aggregation : 'stacking'    # how to organize if more than one codebook is used.
+    padding_idx: 1024   # default is "codebook_size * n_codebooks_to_use"
 
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-    freq_masks: 0 # set to zero to disable it
-    time_masks: 0 # set to zero to disable it
+    freq_masks: 2 # set to zero to disable it
+    time_masks: 10 # set to zero to disable it
     freq_width: 27
     time_width: 0.05
 
   encoder:
     _target_: nemo.collections.asr.modules.ConformerEncoder
-    feat_in: ${model.preprocessor.embedding_dim}
+    feat_in: ${model.preprocessor.embedding_out_dim}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
     n_layers: 17
     d_model: 512

@@ -902,20 +902,28 @@ class SpectrogramToAudio(NeuralModule):
 class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
     """Simple Embedding module to convert codes to latent vectors
     Args:
-        n_codebooks: number of codebooks
-        codebook_size: size of each codebook
-        n_codebooks_to_load: number of codebooks to load
+        codec_vocab_size: total size of vocabulary
         embedding_dim: dimension of the embedding
+        embedding_out_dim: dimension of the output embedding
+        padding_idx: padding index
     """
     def __init__(
         self,
-        codec_vocab_size: int,
+        codebook_size: int,
+        n_codebooks_to_use: int,
         embedding_dim: int=512,
+        embedding_out_dim: int=512,
+        codebook_aggregation: Optional[str]=None,
         padding_idx: Optional[int]=None,
         *args,
         **kwargs,
     ):
         super().__init__()
+        self.codebook_size = codebook_size
+        self.n_codebooks_to_use = n_codebooks_to_use
+        self.codebook_aggregation = codebook_aggregation
+
+        codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
         if padding_idx is not None:
             self.embedding = torch.nn.Embedding(
                 num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
@@ -926,6 +934,18 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
             self.embedding = torch.nn.Embedding(
                 num_embeddings=codec_vocab_size,
                 embedding_dim=embedding_dim,
+            )
+
+        # out projection
+        if self.codebook_aggregation == 'stacking':
+            self.out_projection = torch.nn.Linear(
+                in_features=embedding_dim * n_codebooks_to_use,
+                out_features=embedding_out_dim,
+            )
+        else:
+            self.out_projection = torch.nn.Linear(
+                    in_features=embedding_dim,
+                    out_features=embedding_out_dim,
             )
 
 
@@ -942,7 +962,35 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
             output_length: length of each output embedding sequence of shape (B,)
         """
         output = self.embedding(input_signal)
+        # [B, T, D]
+        # codebooks are interleaved in T dimension
+        # e.g. with two code books: c11, c21, c12, c22, c13, c23, ...
+        # stack all codebooks in T dimension
+        if self.codebook_aggregation == 'stacking':
+            b, t, d = output.shape
+            output = output.view(b, t // self.n_codebooks_to_use, d * self.n_codebooks_to_use).contiguous()
+            # [B, T//n_codebooks_to_use, D*n_codebooks_to_use]
+
+            # change output_length correspondingly
+            if length is not None:
+                length = length // self.n_codebooks_to_use
+        
+        if self.codebook_aggregation == 'sum':
+            b, t, d = output.shape
+            output = output.view(b, t // self.n_codebooks_to_use, self.n_codebooks_to_use, d).contiguous()
+            # [B, T//n_codebooks_to_use, n_codebooks_to_use, D]
+            output = torch.sum(output, dim=2)
+            # [B, T//n_codebooks_to_use, D]
+
+            # change output_length correspondingly
+            if length is not None:
+                length = length // self.n_codebooks_to_use
+        
+        # output projection 
+        if self.out_projection is not None:
+            output = self.out_projection(output)
         output = torch.transpose(output, -1, -2)    # to be consistent with other preprocessors
+        # [B, D, T]
         output_length = length
         return output, output_length
         
