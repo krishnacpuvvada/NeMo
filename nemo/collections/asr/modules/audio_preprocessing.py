@@ -898,7 +898,7 @@ class SpectrogramToAudio(NeuralModule):
         output_length = input_length.sub(1).mul(self.istft.hop_length).long()
         return output_length
 
-
+import numpy as np
 class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
     """Simple Embedding module to convert codes to latent vectors
     Args:
@@ -915,6 +915,8 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         embedding_out_dim: int=512,
         codebook_aggregation: Optional[str]=None,
         padding_idx: Optional[int]=None,
+        init_path: Optional[str]=None,
+        freeze: Optional[bool]=False,
         *args,
         **kwargs,
     ):
@@ -924,29 +926,52 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         self.codebook_aggregation = codebook_aggregation
 
         codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
-        if padding_idx is not None:
-            self.embedding = torch.nn.Embedding(
-                num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
-                embedding_dim=embedding_dim,
+
+        if init_path is not None:
+            # load npz file
+            codebooks = np.load(init_path)["codebooks"]
+            emb_init = np.concatenate(codebooks[:n_codebooks_to_use], axis=0)
+            _num_codes, _emb_dim = emb_init.shape
+            assert _num_codes == codec_vocab_size, f"vocab size mismatch: {codec_vocab_size} vs {_num_codes}"
+            assert _emb_dim == embedding_dim, f"embedding dim mismatch: {embedding_dim} vs {_emb_dim}"
+            emb_init = torch.from_numpy(emb_init)
+            logging.info(f"Loaded {emb_init.shape} embeddings from {init_path}")
+
+
+            if padding_idx is not None:
+                # concatenate padding embedding at the end
+                emb_init = torch.cat([emb_init, torch.zeros(1, embedding_dim)], dim=0)
+            self.embedding = torch.nn.Embedding.from_pretrained(
+                embeddings=emb_init,
+                freeze=freeze,
                 padding_idx=padding_idx,
             )
         else:
-            self.embedding = torch.nn.Embedding(
-                num_embeddings=codec_vocab_size,
-                embedding_dim=embedding_dim,
-            )
+            if padding_idx is not None:
+                self.embedding = torch.nn.Embedding(
+                    num_embeddings=codec_vocab_size+1,      # +1 for padding_idx
+                    embedding_dim=embedding_dim,
+                    padding_idx=padding_idx,
+                )
+            else:
+                self.embedding = torch.nn.Embedding(
+                    num_embeddings=codec_vocab_size,
+                    embedding_dim=embedding_dim,
+                )
 
         # out projection
         if self.codebook_aggregation == 'stacking':
+            _out_dim = embedding_dim * n_codebooks_to_use
+        else:
+            _out_dim = embedding_dim
+        
+        if embedding_out_dim != _out_dim:
             self.out_projection = torch.nn.Linear(
-                in_features=embedding_dim * n_codebooks_to_use,
+                in_features=_out_dim,
                 out_features=embedding_out_dim,
             )
         else:
-            self.out_projection = torch.nn.Linear(
-                    in_features=embedding_dim,
-                    out_features=embedding_out_dim,
-            )
+            self.out_projection = None
 
 
     def forward(self, 

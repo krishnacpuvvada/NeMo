@@ -97,6 +97,8 @@ model:
     embedding_out_dim: 512
     codebook_aggregation : 'stacking'    # how to organize if more than one codebook is used.
     padding_idx: 1024   # default is "codebook_size * n_codebooks_to_use"
+    init_path: null     # path to a .npz file containing list of codebooks with key "codebooks"
+    freeze: false       # freeze the codebook embeddings
 
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
