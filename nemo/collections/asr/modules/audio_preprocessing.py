@@ -917,6 +917,8 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         padding_idx: Optional[int]=None,
         init_path: Optional[str]=None,
         freeze: Optional[bool]=False,
+        rnn_hidden_dim: Optional[int]=128,
+        rnn_num_layers: Optional[int]=0,
         *args,
         **kwargs,
     ):
@@ -959,6 +961,25 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
                     embedding_dim=embedding_dim,
                 )
 
+        # rnnt module
+        if not rnn_hidden_dim == embedding_dim:
+            rnn_out_proj_dim = embedding_dim
+        else:
+            rnn_out_proj_dim = 0 
+
+        if rnn_num_layers > 0:
+            self.rnn = torch.nn.LSTM(
+                input_size=embedding_dim,
+                hidden_size=rnn_hidden_dim,
+                num_layers=rnn_num_layers,
+                batch_first=True,
+                bidirectional=False,
+                proj_size=rnn_out_proj_dim,
+            )
+        else:
+            self.rnn = None
+        
+        
         # out projection
         if self.codebook_aggregation == 'stacking':
             _out_dim = embedding_dim * n_codebooks_to_use
@@ -1010,6 +1031,10 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
             # change output_length correspondingly
             if length is not None:
                 length = length // self.n_codebooks_to_use
+        
+        if self.rnn is not None:
+            output, _ = self.rnn(output)
+            # [B, T, D]
         
         # output projection 
         if self.out_projection is not None:
