@@ -165,6 +165,7 @@ parser.add_argument(
 )
 
 parser.add_argument("--shuffle_seed", type=int, default=None, help="Random seed for use if shuffling is enabled.")
+
 parser.add_argument(
     '--write_metadata',
     action='store_true',
@@ -179,6 +180,14 @@ parser.add_argument(
     action='store_true',
     help="Do not write sharded manifests along with the aggregated manifest.",
 )
+
+parser.add_argument(
+    "--manifest_key_to_tar",
+    default='audio_filepath',
+    type=str,
+    help="Manifest key to use for tarball creation. Defaults to `audio_filepath`.",
+)
+
 parser.add_argument('--workers', type=int, default=1, help='Number of worker processes')
 args = parser.parse_args()
 
@@ -193,6 +202,7 @@ class ASRTarredDatasetConfig:
     sort_in_shards: bool = True
     shard_manifests: bool = True
     keep_files_together: bool = False
+    manifest_key_to_tar: str = 'audio_filepath'
 
 
 @dataclass
@@ -287,7 +297,7 @@ class ASRTarredDatasetBuilder:
             if config.keep_files_together:
                 filename_entries = defaultdict(list)
                 for ent in entries:
-                    filename_entries[ent["audio_filepath"]].append(ent)
+                    filename_entries[ent[config.manifest_key_to_tar]].append(ent)
                 filenames = list(filename_entries.keys())
                 random.shuffle(filenames)
                 shuffled_entries = []
@@ -310,7 +320,7 @@ class ASRTarredDatasetBuilder:
             print(f"Shard {i} has entries {start_idx} ~ {end_idx}")
             files = set()
             for ent_id in range(start_idx, end_idx):
-                files.add(entries[ent_id]["audio_filepath"])
+                files.add(entries[ent_id][config.manifest_key_to_tar])
             print(f"Shard {i} contains {len(files)} files")
             if i == config.num_shards - 1:
                 # We discard in order to have the same number of entries per shard.
@@ -580,13 +590,13 @@ class ASRTarredDatasetBuilder:
 
         count = dict()
         for entry in entries:
-            # We squash the filename since we do not preserve directory structure of audio files in the tarball.
-            if os.path.exists(entry["audio_filepath"]):
-                audio_filepath = entry["audio_filepath"]
+            # We squash the filename since we do not preserve directory structure of files in the tarball.
+            if os.path.exists(entry[self.config.manifest_key_to_tar]):
+                audio_filepath = entry[self.config.manifest_key_to_tar]
             else:
-                audio_filepath = os.path.join(manifest_folder, entry["audio_filepath"])
+                audio_filepath = os.path.join(manifest_folder, entry[self.config.manifest_key_to_tar])
                 if not os.path.exists(audio_filepath):
-                    raise FileNotFoundError(f"Could not find {entry['audio_filepath']}!")
+                    raise FileNotFoundError(f"Could not find {entry[self.config.manifest_key_to_tar]}!")
 
             base, ext = os.path.splitext(audio_filepath)
             base = base.replace('/', '_')
@@ -602,7 +612,7 @@ class ASRTarredDatasetBuilder:
                 count[squashed_filename] += 1
 
             new_entry = {
-                'audio_filepath': to_write,
+                self.config.manifest_key_to_tar: to_write,
                 'duration': entry['duration'],
                 'shard_id': shard_id,  # Keep shard ID for recordkeeping
             }
@@ -618,6 +628,10 @@ class ASRTarredDatasetBuilder:
 
             if 'lang' in entry:
                 new_entry['lang'] = entry['lang']
+
+            # below is a hack as ASR datasets expects 'audio_filepath' to be present in the manifest
+            if not 'audio_filepath' in new_entry:
+                new_entry['audio_filepath'] = 'na'           
 
             new_entries.append(new_entry)
 
@@ -692,6 +706,7 @@ def create_tar_datasets(min_duration: float, max_duration: float, target_dir: st
             sort_in_shards=args.sort_in_shards,
             shard_manifests=shard_manifests,
             keep_files_together=args.keep_files_together,
+            manifest_key_to_tar=args.manifest_key_to_tar,
         )
         builder.configure(config)
         builder.create_new_dataset(manifest_path=args.manifest_path, target_dir=target_dir, num_workers=args.workers)
