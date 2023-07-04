@@ -1,0 +1,165 @@
+name: &name "TitaNet"
+sample_rate: &sample_rate 16000
+
+model:
+  train_ds:
+    manifest_filepath: ???
+    sample_rate: 16000
+    labels: null
+    batch_size: 64
+    shuffle: True
+    is_tarred: False
+    tarred_audio_filepaths: null
+    tarred_shard_strategy: "scatter"
+    audio_format: ${model.model_defaults.audio_format}
+    codebook_size: ${model.model_defaults.codebook_size}
+    n_codebooks_to_use: ${model.model_defaults.n_codebooks_to_use}
+    audio_padding_idx: ${model.model_defaults.audio_padding_idx}
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: 16000
+    labels: null
+    batch_size: 128
+    shuffle: False
+    audio_format: ${model.model_defaults.audio_format}
+    codebook_size: ${model.model_defaults.codebook_size}
+    n_codebooks_to_use: ${model.model_defaults.n_codebooks_to_use}
+    audio_padding_idx: ${model.model_defaults.audio_padding_idx}
+
+  model_defaults:
+    filters: 1024
+    repeat: 3
+    dropout: 0.1
+    separable: true
+    se: true
+    se_context_size: -1
+    kernel_size_factor: 1.0
+    audio_format: "codes"
+    codebook_size: 1024
+    n_codebooks_to_use: 1
+    audio_padding_idx: 1024
+
+    
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioCodeToEmbeddingPreprocessor
+    codebook_size: ${model.model_defaults.codebook_size}
+    n_codebooks_to_use: ${model.model_defaults.n_codebooks_to_use}
+    embedding_dim: 512
+    embedding_out_dim: 80
+    codebook_aggregation : 'sum'    # how to organize if more than one codebook is used.
+    padding_idx: ${model.model_defaults.audio_padding_idx}   # should be equal to "codebook_size * n_codebooks_to_use"
+    init_path: null     # path to a .npz file containing list of codebooks with key "codebooks"
+    freeze: false       # freeze the codebook embeddings
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 3
+    freq_width: 4
+    time_masks: 5
+    time_width: 0.03
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConvASREncoder
+    feat_in: ${model.preprocessor.embedding_out_dim}
+    activation: relu
+    conv_mask: true
+
+    jasper:
+      -   filters: ${model.model_defaults.filters}
+          repeat: 1
+          kernel: [3]
+          stride: [1]
+          dilation: [1]
+          dropout: 0.0
+          residual: false
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat:  ${model.model_defaults.repeat}
+          kernel: [7]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat: ${model.model_defaults.repeat}
+          kernel: [11]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat: ${model.model_defaults.repeat}
+          kernel: [15]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: &enc_feat_out 3072
+          repeat: 1
+          kernel: [1]
+          stride: [1]
+          dilation: [1]
+          dropout: 0.0
+          residual: false
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+  decoder:
+    _target_: nemo.collections.asr.modules.SpeakerDecoder
+    feat_in: *enc_feat_out
+    num_classes: 7205
+    pool_mode: 'attention'
+    emb_sizes: 192
+
+  loss:
+    _target_: nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss # you could also use cross-entrophy loss
+    scale: 30    
+    margin: 0.2  
+
+  optim:
+    name: sgd
+    lr: .006 #(original titanet-large was trained with 0.08 lr)
+    weight_decay: 0.001
+
+    # scheduler setup
+    sched:
+      name: CosineAnnealing
+      warmup_ratio: 0.1
+      min_lr: 0.0
+
+trainer:
+  devices: 1 # number of gpus (original titanet-large was trained on 4 nodes with 8 gpus each)
+  max_epochs: 250
+  max_steps: -1 # computed at runtime if not set
+  num_nodes: 1
+  accelerator: gpu
+  strategy: ddp
+  deterministic: True
+  enable_checkpointing: False
+  logger: False
+  log_every_n_steps: 1  # Interval of logging.
+  val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  gradient_clip_val: 1.0
+
+exp_manager:
+  exp_dir: null
+  name: *name
+  create_tensorboard_logger: True
+  create_checkpoint_callback: True

@@ -269,6 +269,7 @@ class FeatureToLabelDataset(Dataset):
         manifest_filepath (str): Dataset parameter. Path to JSON containing data.
         labels (Optional[list]): Dataset parameter. List of unique labels collected from all samples.
         augmentor (Optional): feature augmentation
+        feature_loader (Optional): feature loader to use
 
     """
 
@@ -296,13 +297,20 @@ class FeatureToLabelDataset(Dataset):
         augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
         window_length_in_sec: float = 0.63,
         shift_length_in_sec: float = 0.01,
+        featurizer: Optional[object] = None,
+        feat_pad_val: Optional[int] = None,
     ):
         super().__init__()
         self.window_length_in_sec = window_length_in_sec
         self.shift_length_in_sec = shift_length_in_sec
         self.collection = collections.ASRFeatureLabel(manifests_files=manifest_filepath.split(','),)
+        self.feat_pad_val = feat_pad_val
 
-        self.feature_loader = ExternalFeatureLoader(augmentor=augmentor)
+        if featurizer is None:
+            self.feature_loader = ExternalFeatureLoader(augmentor=augmentor)
+        else:
+            self.feature_loader = featurizer
+        
         self.labels = labels if labels else self.collection.uniq_labels
 
         self.label2id, self.id2label = {}, {}
@@ -320,7 +328,7 @@ class FeatureToLabelDataset(Dataset):
         sample = self.collection[index]
 
         features = self.feature_loader.process(sample.feature_file)
-        f, fl = features, torch.tensor(features.shape[1]).long()
+        f, fl = features, torch.tensor(features.shape[-1]).long()
 
         t = torch.tensor(self.label2id[sample.label])
         tl = torch.tensor(1).long()
@@ -328,7 +336,10 @@ class FeatureToLabelDataset(Dataset):
         return f, fl, t, tl
 
     def _collate_fn(self, batch):
-        return _audio_feature_collate_fn(batch, self.ZERO_LEVEL_SPEC_DB_VAL, 0)
+        if self.feat_pad_val is not None:
+            return _audio_feature_collate_fn(batch, self.feat_pad_val, 0)
+        else:
+            return _audio_feature_collate_fn(batch, self.ZERO_LEVEL_SPEC_DB_VAL, 0)
 
     def _vad_segment_collate_fn(self, batch):
         return _vad_feature_segment_collate_fn(

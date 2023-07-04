@@ -919,6 +919,7 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         freeze: Optional[bool]=False,
         rnn_hidden_dim: Optional[int]=128,
         rnn_num_layers: Optional[int]=0,
+        flattened_input_codes: Optional[bool]=True,
         *args,
         **kwargs,
     ):
@@ -926,6 +927,7 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         self.codebook_size = codebook_size
         self.n_codebooks_to_use = n_codebooks_to_use
         self.codebook_aggregation = codebook_aggregation
+        self.flattened_input_codes = flattened_input_codes
 
         codec_vocab_size = self.codebook_size * self.n_codebooks_to_use
 
@@ -1001,48 +1003,78 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
                 ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert a batch of input codes to a batch of embeddings
         Args:
-            input_signal: input codes of shape (B, T)
+            input_signal: input codes of shape (B, T) or (B, N, T)
             length: length of each input code sequence of shape (B,)
         Returns:
             output: embeddings of shape (B, embedding_dim, T)
             output_length: length of each output embedding sequence of shape (B,)
         """
-        output = self.embedding(input_signal)
-        # [B, T, D]
-        # codebooks are interleaved in T dimension
-        # e.g. with two code books: c11, c21, c12, c22, c13, c23, ...
-        # stack all codebooks in T dimension
-        if self.codebook_aggregation == 'stacking':
-            b, t, d = output.shape
-            output = output.view(b, t // self.n_codebooks_to_use, d * self.n_codebooks_to_use).contiguous()
-            # [B, T//n_codebooks_to_use, D*n_codebooks_to_use]
-
-            # change output_length correspondingly
-            if length is not None:
-                length = length // self.n_codebooks_to_use
+        # following big if-else is bad coding, to be changed later
         
-        if self.codebook_aggregation == 'sum':
-            b, t, d = output.shape
-            output = output.view(b, t // self.n_codebooks_to_use, self.n_codebooks_to_use, d).contiguous()
-            # [B, T//n_codebooks_to_use, n_codebooks_to_use, D]
-            output = torch.sum(output, dim=2)
-            # [B, T//n_codebooks_to_use, D]
-
-            # change output_length correspondingly
-            if length is not None:
-                length = length // self.n_codebooks_to_use
+        if not self.flattened_input_codes:
+            # input codes are of shape (B, N, T)
+            output = self.embedding(input_signal)
+            # [B, N, T, D]
+            
+            # aggegate
+            if self.codebook_aggregation == 'sum':
+                # aggregate over N dimension
+                output = torch.sum(output, dim=1)
+                # [B, T, D]
+            else:
+                raise NotImplementedError(f"codebook_aggregation={self.codebook_aggregation} not implemented")
         
-        if self.rnn is not None:
-            output, _ = self.rnn(output)
+            # rnn
+            if self.rnn is not None:
+                output, _ = self.rnn(output)
+                # [B, T, D]
+            
+            # output projection
+            if self.out_projection is not None:
+                output = self.out_projection(output)
+
+            output = torch.transpose(output, -1, -2)    # to be consistent with other preprocessors
+            # [B, D, T]
+            output_length = length
+            return output, output_length
+             
+        else:
+            output = self.embedding(input_signal)
             # [B, T, D]
-        
-        # output projection 
-        if self.out_projection is not None:
-            output = self.out_projection(output)
-        output = torch.transpose(output, -1, -2)    # to be consistent with other preprocessors
-        # [B, D, T]
-        output_length = length
-        return output, output_length
+            # codebooks are interleaved in T dimension
+            # e.g. with two code books: c11, c21, c12, c22, c13, c23, ...
+            # stack all codebooks in T dimension
+            if self.codebook_aggregation == 'stacking':
+                b, t, d = output.shape
+                output = output.view(b, t // self.n_codebooks_to_use, d * self.n_codebooks_to_use).contiguous()
+                # [B, T//n_codebooks_to_use, D*n_codebooks_to_use]
+
+                # change output_length correspondingly
+                if length is not None:
+                    length = length // self.n_codebooks_to_use
+            
+            if self.codebook_aggregation == 'sum':
+                b, t, d = output.shape
+                output = output.view(b, t // self.n_codebooks_to_use, self.n_codebooks_to_use, d).contiguous()
+                # [B, T//n_codebooks_to_use, n_codebooks_to_use, D]
+                output = torch.sum(output, dim=2)
+                # [B, T//n_codebooks_to_use, D]
+
+                # change output_length correspondingly
+                if length is not None:
+                    length = length // self.n_codebooks_to_use
+            
+            if self.rnn is not None:
+                output, _ = self.rnn(output)
+                # [B, T, D]
+            
+            # output projection 
+            if self.out_projection is not None:
+                output = self.out_projection(output)
+            output = torch.transpose(output, -1, -2)    # to be consistent with other preprocessors
+            # [B, D, T]
+            output_length = length
+            return output, output_length
         
         
 @dataclass

@@ -26,13 +26,14 @@ from torchmetrics import Accuracy
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset, cache_datastore_manifests
+from nemo.collections.asr.data.feature_to_label import FeatureToLabelDataset
 from nemo.collections.asr.data.audio_to_label_dataset import (
     get_concat_tarred_speech_label_dataset,
     get_tarred_speech_label_dataset,
 )
 from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
-from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer, AudioCodesFeaturizer
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.common.metrics import TopKClassificationAccuracy
 from nemo.collections.common.parts.preprocessing.collections import ASRSpeechLabel
@@ -186,9 +187,16 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         else:
             augmentor = None
 
-        featurizer = WaveformFeaturizer(
-            sample_rate=config['sample_rate'], int_values=config.get('int_values', False), augmentor=augmentor
-        )
+        # featurizer
+        if config.get('audio_format', 'not_codes') == 'codes':
+            featurizer = AudioCodesFeaturizer(codebook_size=config['codebook_size'],
+                                              n_codebooks_to_use=config['n_codebooks_to_use'],
+                                              flatten=True, 
+                                              augmentor=augmentor)
+        else:
+            featurizer = WaveformFeaturizer(
+                sample_rate=config['sample_rate'], int_values=config.get('int_values', False), augmentor=augmentor
+            )
         shuffle = config.get('shuffle', False)
         if config.get('is_tarred', False):
             if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
@@ -223,23 +231,35 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
                 logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
                 return None
 
-            dataset = AudioToSpeechLabelDataset(
-                manifest_filepath=config['manifest_filepath'],
-                labels=config['labels'],
-                featurizer=featurizer,
-                max_duration=config.get('max_duration', None),
-                min_duration=config.get('min_duration', None),
-                trim=config.get('trim_silence', False),
-                normalize_audio=config.get('normalize_audio', False),
-                cal_labels_occurrence=config.get('cal_labels_occurrence', False),
-            )
-            if dataset.labels_occurrence:
+            if config.get("audio_format", "not_codes") == "codes":
+                dataset = FeatureToLabelDataset(
+                    manifest_filepath=config['manifest_filepath'],
+                    labels=config['labels'],
+                    featurizer=featurizer,
+                    feat_pad_val=config.get('audio_padding_idx', None),
+                )
+            else:
+                dataset = AudioToSpeechLabelDataset(
+                    manifest_filepath=config['manifest_filepath'],
+                    labels=config['labels'],
+                    featurizer=featurizer,
+                    max_duration=config.get('max_duration', None),
+                    min_duration=config.get('min_duration', None),
+                    trim=config.get('trim_silence', False),
+                    normalize_audio=config.get('normalize_audio', False),
+                    cal_labels_occurrence=config.get('cal_labels_occurrence', False),
+                )
+            if getattr(dataset, 'labels_occurrence', None):
                 self.labels_occurrence = dataset.labels_occurrence
 
-        if hasattr(dataset, 'fixed_seq_collate_fn'):
-            collate_fn = dataset.fixed_seq_collate_fn
+        
+        if config.get('audio_format', 'not_codes') == 'codes':
+            collate_fn = dataset._collate_fn
         else:
-            collate_fn = dataset.datasets[0].fixed_seq_collate_fn
+            if hasattr(dataset, 'fixed_seq_collate_fn'):
+                collate_fn = dataset.fixed_seq_collate_fn
+            else:
+                collate_fn = dataset.datasets[0].fixed_seq_collate_fn
 
         batch_size = config['batch_size']
         return torch.utils.data.DataLoader(

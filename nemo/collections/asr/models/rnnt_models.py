@@ -318,6 +318,28 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                 self.joint.unfreeze()
         return hypotheses, all_hypotheses
 
+    
+    @torch.no_grad()
+    def transcribe_codes(
+        self,
+        paths2audio_files: List[str],
+        batch_size: int = 4,
+        return_hypotheses: bool = False,
+        partial_hypothesis: Optional[List['Hypothesis']] = None,
+        num_workers: int = 0,
+        channel_selector: Optional[ChannelSelectorType] = None,
+        augmentor: DictConfig = None,
+        verbose: bool = True,
+    ) -> Tuple[List[str], Optional[List['Hypothesis']]]:
+        """
+        Codes analog of transcribe function.
+        See transcribe function for more details.
+        Should merge with transcribe function.
+        """
+
+        raise NotImplementedError
+    
+
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
         """
         Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning a pre-trained model.

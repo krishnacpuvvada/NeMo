@@ -226,11 +226,13 @@ class AudioCodesFeaturizer(object):
         self,
         codebook_size: int,
         n_codebooks_to_use: int = None,
+        flatten: Optional[bool] = False,
         augmentor: Optional["nemo.collections.asr.parts.perturb.AudioAugmentor"] = None,
     ):
         self.codebook_size = codebook_size
         self.augmentor = augmentor if augmentor is not None else AudioAugmentor()
         self.n_codebooks_to_use = n_codebooks_to_use
+        self.flatten = flatten
 
     
     def _flatten_codebooks(self, codes):
@@ -259,10 +261,15 @@ class AudioCodesFeaturizer(object):
 
         if self.n_codebooks_to_use is not None:
             codes = codes[:self.n_codebooks_to_use, :]
+
+        # if n_codebooks_to_use is only one, we need to add a dimension
+        if self.n_codebooks_to_use == 1:
+            codes = np.expand_dims(codes, axis=0)        # [N, T]
         
         # flatten
-        codes = self._flatten_codebooks(codes)
-        return torch.tensor(codes, dtype=torch.long)   # [T]  embedding layers expects int or long
+        if self.flatten:
+            codes = self._flatten_codebooks(codes)      # [T]  
+        return torch.tensor(codes, dtype=torch.long)   # embedding layers expects int or long
 
 
 class FeaturizerFactory(object):
