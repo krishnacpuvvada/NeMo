@@ -36,7 +36,7 @@ model:
     enc_hidden: ${model.encoder.d_model}
     pred_hidden: 640
     joint_hidden: 640
-    audio_type: 'codes'
+    audio_type: 'codes'   # change this to 'audio_format' instead of 'audio_type'
     codebook_size: 1024
     n_codebooks_to_use: 1
 
