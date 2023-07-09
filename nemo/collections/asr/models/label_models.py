@@ -561,13 +561,32 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         if trained_labels is not None:
             trained_labels = list(trained_labels)
 
-        featurizer = WaveformFeaturizer(sample_rate=sample_rate)
+        if self._cfg['model_defaults'].get('audio_format', 'not_codes') == 'codes':
+            featurizer = AudioCodesFeaturizer(
+                codebook_size=self._cfg['model_defaults']['codebook_size'],
+                n_codebooks_to_use=self._cfg['model_defaults']['n_codebooks_to_use'],
+                flatten=True,
+                augmentor=None,
+            )
 
-        dataset = AudioToSpeechLabelDataset(manifest_filepath=manifest_filepath, labels=None, featurizer=featurizer)
-
-        dataloader = torch.utils.data.DataLoader(
-            dataset=dataset, batch_size=batch_size, collate_fn=dataset.fixed_seq_collate_fn,
-        )
+            dataset = FeatureToLabelDataset(
+                manifest_filepath=manifest_filepath,
+                labels=None,
+                featurizer=featurizer,
+                feat_pad_val=self._cfg['model_defaults'].get('audio_padding_idx', None),
+            )
+            dataloader = torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=batch_size,
+                collate_fn=dataset._collate_fn,
+                shuffle=False,
+            )
+        else:
+            featurizer = WaveformFeaturizer(sample_rate=sample_rate)
+            dataset = AudioToSpeechLabelDataset(manifest_filepath=manifest_filepath, labels=None, featurizer=featurizer)
+            dataloader = torch.utils.data.DataLoader(
+                dataset=dataset, batch_size=batch_size, collate_fn=dataset.fixed_seq_collate_fn,
+            )
 
         logits = []
         embs = []
