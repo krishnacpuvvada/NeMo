@@ -994,12 +994,13 @@ class AudioCollection(Audio):
 class FeatureLabel(_Collection):
     """List of feature sequence and their label correspondence with preprocessing."""
 
-    OUTPUT_TYPE = collections.namedtuple(typename='FeatureLabelEntity', field_names='feature_file label duration',)
+    OUTPUT_TYPE = collections.namedtuple(typename='FeatureLabelEntity', field_names='feature_file label offset duration',)
 
     def __init__(
         self,
         feature_files: List[str],
         labels: List[str],
+        offsets: List[float],
         durations: List[float],
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
@@ -1024,7 +1025,7 @@ class FeatureLabel(_Collection):
         if index_by_file_id:
             self.mapping = {}
 
-        for feature_file, label, duration in zip(feature_files, labels, durations):
+        for feature_file, label, offset, duration in zip(feature_files, labels, offsets, durations):
             # Duration filters.
             if min_duration is not None and duration < min_duration:
                 duration_filtered += duration
@@ -1034,7 +1035,7 @@ class FeatureLabel(_Collection):
                 duration_filtered += duration
                 continue
 
-            data.append(output_type(feature_file, label, duration))
+            data.append(output_type(feature_file, label, offset, duration))
             total_duration += duration
 
             if index_by_file_id:
@@ -1081,11 +1082,12 @@ class ASRFeatureLabel(FeatureLabel):
             index_by_file_id: If True, saves a mapping from filename base (ID) to index in data; pass to `FeatureSequenceLabel` constructor.
         """
 
-        feature_files, labels, durations = [], [], []
+        feature_files, labels, offsets, durations = [], [], [], []
         all_labels = []
         for item in manifest.item_iter(manifests_files, parse_func=self._parse_item):
             feature_files.append(item['feature_file'])
             durations.append(item['duration'])
+            offsets.append(item['offset'])
 
             if not is_regression_task:
                 label = item['label']
@@ -1099,7 +1101,7 @@ class ASRFeatureLabel(FeatureLabel):
         if cal_labels_occurrence:
             self.labels_occurrence = collections.Counter(all_labels)
 
-        super().__init__(feature_files, labels, durations, *args, **kwargs)
+        super().__init__(feature_files, labels, offsets, durations, *args, **kwargs)
 
     def _parse_item(self, line: str, manifest_file: str) -> Dict[str, Any]:
         item = json.loads(line)
@@ -1121,7 +1123,7 @@ class ASRFeatureLabel(FeatureLabel):
         else:
             raise ValueError(f"Manifest file has invalid json line structure: {line} without proper 'label' key.")
 
-        item = dict(feature_file=item['feature_file'], label=item['label'], duration=item['duration'])
+        item = dict(feature_file=item['feature_file'], label=item['label'], offset=item.get('offset', 0.), duration=item['duration'])
 
         return item
 

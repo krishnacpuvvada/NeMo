@@ -565,6 +565,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             featurizer = AudioCodesFeaturizer(
                 codebook_size=self._cfg['model_defaults']['codebook_size'],
                 n_codebooks_to_use=self._cfg['model_defaults']['n_codebooks_to_use'],
+                frame_rate=75,
                 flatten=True,
                 augmentor=None,
             )

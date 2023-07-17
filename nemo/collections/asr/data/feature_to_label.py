@@ -327,7 +327,7 @@ class FeatureToLabelDataset(Dataset):
     def __getitem__(self, index):
         sample = self.collection[index]
 
-        features = self.feature_loader.process(sample.feature_file)
+        features = self.feature_loader.process(sample.feature_file, sample.offset, sample.duration)
         f, fl = features, torch.tensor(features.shape[-1]).long()
 
         t = torch.tensor(self.label2id[sample.label])

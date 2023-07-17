@@ -226,15 +226,21 @@ class AudioCodesFeaturizer(object):
         self,
         codebook_size: int,
         n_codebooks_to_use: int = None,
+        frame_rate: int = None,
         flatten: Optional[bool] = False,
         augmentor: Optional["nemo.collections.asr.parts.perturb.AudioAugmentor"] = None,
     ):
         self.codebook_size = codebook_size
         self.augmentor = augmentor if augmentor is not None else AudioAugmentor()
         self.n_codebooks_to_use = n_codebooks_to_use
+        self.frame_rate = frame_rate
         self.flatten = flatten
 
-    
+        # raise error if frame_rate is None
+        if self.frame_rate is None:
+            raise ValueError("frame_rate must be specified.")
+
+
     def _flatten_codebooks(self, codes):
         """flatten codebooks
         """
@@ -245,7 +251,7 @@ class AudioCodesFeaturizer(object):
         return flat_codes
     
     
-    def process(self, file_path):
+    def process(self, file_path, offset=0., duration=0.):
         """load npz file from filepath
         """
         codes = np.load(file_path)
@@ -259,8 +265,20 @@ class AudioCodesFeaturizer(object):
         
         assert len(codes.shape) == 2, f"codes must be 2D, got {len(codes.shape)}"
 
-        if self.n_codebooks_to_use is not None:
-            codes = codes[:self.n_codebooks_to_use, :]
+        if self.n_codebooks_to_use is None:
+            self.n_codebooks_to_use = codes.shape[0]
+
+        # time stamps
+        s = int(offset * self.frame_rate)
+        s  = min(s, codes.shape[1])
+
+        if duration > 0:
+            e = int((offset + duration) * self.frame_rate)
+            e = min(e, codes.shape[1])
+        else: 
+            e = codes.shape[1]
+
+        codes = codes[:self.n_codebooks_to_use, s:e]  # [n_codebooks, n_frames]
 
         # if n_codebooks_to_use is only one, we need to add a dimension
         if self.n_codebooks_to_use == 1:
