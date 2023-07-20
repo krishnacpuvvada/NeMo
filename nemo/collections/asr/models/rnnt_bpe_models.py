@@ -523,16 +523,31 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
             batch_size = min(config['batch_size'], len(config['paths2audio_files']))
 
-        dl_config = {
-            'manifest_filepath': manifest_filepath,
-            'sample_rate': self.preprocessor._sample_rate,
-            'batch_size': batch_size,
-            'shuffle': False,
-            'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
-            'pin_memory': True,
-            'channel_selector': config.get('channel_selector', None),
-            'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
-        }
+        if config.get('audio_type', 'codes') == 'codes':
+            dl_config = {
+                'manifest_filepath': manifest_filepath,
+                'audio_type': config.get('audio_type', 'codes'),
+                'codebook_size': self.preprocessor.codebook_size,
+                'n_codebooks_to_use': self.preprocessor.n_codebooks_to_use,
+                'flatten_codebooks': True,
+                'batch_size': batch_size,
+                'shuffle': False,
+                'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
+                'pin_memory': True,
+                'channel_selector': config.get('channel_selector', None),
+                'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
+            }
+        else:
+            dl_config = {
+                'manifest_filepath': manifest_filepath,
+                'sample_rate': self.preprocessor._sample_rate,
+                'batch_size': batch_size,
+                'shuffle': False,
+                'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
+                'pin_memory': True,
+                'channel_selector': config.get('channel_selector', None),
+                'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
+            }
 
         if config.get("augmentor"):
             dl_config['augmentor'] = config.get("augmentor")

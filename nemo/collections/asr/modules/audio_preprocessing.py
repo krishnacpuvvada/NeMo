@@ -913,7 +913,7 @@ class AudioCodeToEmbeddingPreprocessor(NeuralModule, ABC):
         n_codebooks_to_use: int,
         embedding_dim: int=512,
         embedding_out_dim: int=512,
-        codebook_aggregation: Optional[str]=None,
+        codebook_aggregation: Optional[str]='sum',
         padding_idx: Optional[int]=None,
         init_path: Optional[str]=None,
         freeze: Optional[bool]=False,

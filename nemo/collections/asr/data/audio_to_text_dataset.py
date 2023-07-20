@@ -717,6 +717,7 @@ def get_audioCodes_to_text_bpe_dataset_from_config(
         n_codebooks_to_use=config['n_codebooks_to_use'],
         tokenizer=tokenizer,
         augmentor=augmentor,
+        flatten_codebooks=config.get('flatten_codebooks', False),
         max_duration=config.get('max_duration', None),
         min_duration=config.get('min_duration', None),
         max_utts = config.get('max_utts', 0),

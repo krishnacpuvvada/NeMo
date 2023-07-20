@@ -334,10 +334,83 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         """
         Codes analog of transcribe function.
         See transcribe function for more details.
-        Should merge with transcribe function.
+        Should merge with transcribe function later
         """
 
-        raise NotImplementedError
+        if paths2audio_files is None or len(paths2audio_files) == 0:
+            return {}
+
+        # We will store transcriptions here
+        hypotheses = []
+        all_hypotheses = []
+        # Model's mode and device
+        mode = self.training
+        device = next(self.parameters()).device
+
+        if num_workers is None:
+            num_workers = min(batch_size, os.cpu_count() - 1)
+
+        try:
+
+            # Switch model to evaluation mode
+            self.eval()
+            # Freeze the encoder and decoder modules
+            self.encoder.freeze()
+            self.decoder.freeze()
+            self.joint.freeze()
+            logging_level = logging.get_verbosity()
+            logging.set_verbosity(logging.WARNING)
+            # Work in tmp directory - will store manifest file there
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with open(os.path.join(tmpdir, 'manifest.json'), 'w', encoding='utf-8') as fp:
+                    for audio_file in paths2audio_files:
+                        entry = {'audio_filepath': '', 'audio_codes_filepath': audio_file, 'duration': 100000, 'text': ''}
+                        fp.write(json.dumps(entry) + '\n')
+
+                config = {
+                    'paths2audio_files': paths2audio_files,
+                    'batch_size': batch_size,
+                    'temp_dir': tmpdir,
+                    'num_workers': num_workers,
+                    'audio_type': 'codes',
+                    'flatten_codebooks': True,
+                    'channel_selector': channel_selector,
+                }
+
+                if augmentor:
+                    config['augmentor'] = augmentor
+
+
+                temporary_datalayer = self._setup_transcribe_dataloader(config)
+                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=True):
+                    encoded, encoded_len = self.forward(
+                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
+                    )
+                    best_hyp, all_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                        encoded,
+                        encoded_len,
+                        return_hypotheses=return_hypotheses,
+                        partial_hypotheses=partial_hypothesis,
+                    )
+
+                    hypotheses += best_hyp
+                    if all_hyp is not None:
+                        all_hypotheses += all_hyp
+                    else:
+                        all_hypotheses += best_hyp
+
+                    del encoded
+                    del test_batch
+        finally:
+            # set mode back to its original value
+            self.train(mode=mode)
+
+            logging.set_verbosity(logging_level)
+            if mode is True:
+                self.encoder.unfreeze()
+                self.decoder.unfreeze()
+                self.joint.unfreeze()
+        return hypotheses, all_hypotheses
     
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):

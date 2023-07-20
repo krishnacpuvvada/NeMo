@@ -783,6 +783,8 @@ class AudioCodesToBPEDataset(AudioToBPEDataset):
         codebook_size: int,
         tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
         n_codebooks_to_use: int = None,
+        frame_rate: int = 75,
+        flatten_codebooks: bool = False,
         augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
         max_duration: Optional[int] = None,
         min_duration: Optional[int] = None,
@@ -814,7 +816,9 @@ class AudioCodesToBPEDataset(AudioToBPEDataset):
         # replace the waveform featurizer with something that can load audio
         self.featurizer = AudioCodesFeaturizer(codebook_size=codebook_size,
                                                n_codebooks_to_use=n_codebooks_to_use,
-                                               augmentor=augmentor)
+                                               augmentor=augmentor,
+                                               frame_rate=frame_rate,
+                                               flatten=flatten_codebooks)
     
     def __getitem__(self, index):
         sample = sample = self.manifest_processor.collection[index]

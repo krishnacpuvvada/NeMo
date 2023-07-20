@@ -38,7 +38,7 @@ model:
     joint_hidden: 640
     audio_type: 'codes'   # change this to 'audio_format' instead of 'audio_type'
     codebook_size: 1024
-    n_codebooks_to_use: 1
+    n_codebooks_to_use: 32
 
   train_ds:
     manifest_filepath: ???
@@ -93,19 +93,19 @@ model:
     _target_: nemo.collections.asr.modules.AudioCodeToEmbeddingPreprocessor
     codebook_size: ${model.model_defaults.codebook_size}
     n_codebooks_to_use: ${model.model_defaults.n_codebooks_to_use}
-    embedding_dim: 512
-    embedding_out_dim: 512
+    embedding_dim: 128
+    embedding_out_dim: 128
     codebook_aggregation : 'stacking'    # how to organize if more than one codebook is used.
-    padding_idx: 1024   # default is "codebook_size * n_codebooks_to_use"
+    padding_idx: 32768   # default is "codebook_size * n_codebooks_to_use"
     init_path: null     # path to a .npz file containing list of codebooks with key "codebooks"
     freeze: false       # freeze the codebook embeddings
 
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it
-    time_masks: 10 # set to zero to disable it
+    time_masks: 20 # set to zero to disable it
     freq_width: 27
-    time_width: 0.05
+    time_width: 0.03
 
   encoder:
     _target_: nemo.collections.asr.modules.ConformerEncoder
@@ -116,7 +116,7 @@ model:
 
     # Sub-sampling parameters
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
-    subsampling_factor: 8 # must be power of 2 for striding and vggnet
+    subsampling_factor: 4 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
     causal_downsampling: false
 
