@@ -146,8 +146,16 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
 
     # Optional audio codec file
     if 'audio_codes_filepath' in item:
+        item['audio_codes_filepath'] = item.pop('audio_codes_filepath')
+    elif 'audio_codes' in item:
+        item['audio_codes_filepath'] = item.pop('audio_codes')
+    elif 'codes' in item:
+        item['audio_codes_filepath'] = item.pop('codes')
+    else:
+        item['audio_codes_filepath'] = None
+    if item['audio_codes_filepath'] is not None:
         item['audio_codes_filepath'] = get_full_path(audio_file=item['audio_codes_filepath'], manifest_file=manifest_file)
-    
+            
     item = dict(
         audio_file=item['audio_file'],
         duration=item['duration'],
