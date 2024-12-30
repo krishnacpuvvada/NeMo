@@ -20,8 +20,8 @@ try:
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.mlp import MLP, MLPSubmodules
-    from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
-    from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
+    # from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
+    # from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
     from megatron.core.transformer.spec_utils import ModuleSpec
     from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
