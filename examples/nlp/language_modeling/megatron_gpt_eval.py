@@ -229,6 +229,27 @@ def load_model_from_config(trainer, cfg):
                 pretrained_cfg.megatron_amp_O2 = False
             elif trainer.precision in ['bf16', 'bf16-mixed'] and cfg.get('megatron_amp_O2', False):
                 pretrained_cfg.megatron_amp_O2 = True
+            
+            # don't change these unless explicitly provided
+            if 'rotary_base' in cfg.inference:
+                pretrained_cfg.rotary_base = cfg.inference['rotary_base']
+                logging.info(f"setting rotary_base to {pretrained_cfg.rotary_base}")
+            
+            if 'rotary_percentage' in cfg.inference:
+                pretrained_cfg.rotary_percentage = cfg.inference['rotary_percentage']
+                logging.info(f"setting rotary_percentage to {pretrained_cfg.rotary_percentage}")
+
+            if 'target' in cfg.inference: # ability to override target class
+                pretrained_cfg.target = cfg.inference['target']
+
+            if 'attn_scaling_during_inference_type' in cfg.inference:
+                pretrained_cfg.attn_scaling_during_inference_type = cfg.inference['attn_scaling_during_inference_type']
+                logging.info(f"setting attn_scaling_during_inference_type to {pretrained_cfg.attn_scaling_during_inference_type}")
+
+            if 'attn_scaling_during_inference_value' in cfg.inference:
+                pretrained_cfg.attn_scaling_during_inference_value = cfg.inference['attn_scaling_during_inference_value']
+                logging.info(f"setting attn_scaling_during_inference_value to {pretrained_cfg.attn_scaling_during_inference_value}")
+
         model = MegatronGPTModel.restore_from(
             restore_path=cfg.gpt_model_file,
             trainer=trainer,
@@ -343,7 +364,9 @@ def main(cfg) -> None:
         "all_probs": cfg.inference.all_probs,
         "compute_logprob": cfg.inference.compute_logprob,
         "end_strings": cfg.inference.end_strings,
+        "compute_attention_mask": cfg.inference.compute_attention_mask, 
     }
+    logging.info(f"compute attention mask is set to: {cfg.inference.compute_attention_mask}")
 
     prompts = load_prompts(cfg)
 
