@@ -64,7 +64,7 @@ class GPTSFTDataset(Dataset):
         is_test: bool = False,
         output_original_text: bool = False,
         ceil_to_power_2: bool = False,
-        get_attention_mask_from_fusion: bool = False,
+        get_attention_mask_from_fusion: bool = True,
         sanity_check_dist_workers: bool = True,
     ):
         """
